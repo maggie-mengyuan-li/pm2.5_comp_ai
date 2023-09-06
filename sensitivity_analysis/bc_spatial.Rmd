@@ -1,0 +1,369 @@
+---
+title: "Additional sensitivity analyses: spatial models"
+author: "Maggie Li (ml4424)"
+date: "7/7/2021"
+output: html_document
+---
+
+## Read in packages
+
+```{r}
+library(knitr)
+knitr::opts_chunk$set(warning = FALSE, 
+                      message = FALSE, cache.lazy = FALSE)
+```
+
+```{r load packages}
+library(spdep)
+library(rgdal)
+library(rgeos)
+library(tidyverse)
+library(tidycensus)
+library(splm)
+library(tmap)
+library(lme4)
+library(gamm4)
+```
+
+```{r Read in data}
+# read in files, wrangle data to join with spatial dataset
+bc = read_csv("../data/county_concentrations/joined_dta/bc_ai_join.csv") %>%
+  rename(GEOID = County) %>%
+  arrange((as.numeric(GEOID))) %>%
+  dplyr::select(GEOID, bc, State, year, county_type, popd_q, hhinc_q, Climate_Zone)
+```
+
+# GAMM tensor term for spatial autocorrelation
+
+## Get county shapefile and latitude longitude of county centroids
+
+```{r cache = TRUE}
+# get county centroid lat/lon coordinates for tensor smooth product term
+# census_api_key("ef9bc9f1392567620517b2f5ba86c86ebbd70d69", overwrite=TRUE, install = TRUE)
+# readRenviron("~/.Renviron")
+county <- get_decennial(
+  geography = "county",
+  variables = c(county = "COUNTY", state = "STATE"),
+  output = "wide",
+  geometry = TRUE
+  ) %>% 
+  filter(state != "2" & state != "15" & state <= 56) %>% # filter out AL and HI, and territories
+  mutate(GEOID = str_replace(GEOID, "46113", "46102")) %>% 
+  filter(GEOID != "51515")
+
+# compare w/ us_counties df
+# county$GEOID
+# us_counties$GEOID
+# setdiff(county$GEOID, us_counties$GEOID) #compare these vectors
+# setdiff(us_counties$GEOID, county$GEOID) 
+
+# NOTES: Oglala County (46102) was renamed from Shannon County (46113) in 2015; Bedford City (51515) joined Bedford County in 2013 (51019); so use str_replace to change to 46102 and drop 51515 FIPS
+
+count_centroid <- county %>% 
+  st_centroid()
+# count_centroid
+# st_coordinates(count_centroid$geometry) # this function extracts lat long but into a vector, not what we want
+
+count_centroid <- count_centroid %>% mutate(long = unlist(map(count_centroid$geometry,1)),
+           lat = unlist(map(count_centroid$geometry,2))) # extract centroid lat long from sf into the same df. yay!
+
+# Join county lat lon data with bc
+bc_lat_lon = left_join(bc, count_centroid)
+
+bc_lat_lon
+```
+
+## Main effects only (no county type x year interX term)
+
+#### 10 knots
+```{r cache = TRUE}
+# bc_tensor_mod_10 =  gamm4(bc ~ county_type + as.factor(year) + popd_q + hhinc_q
+#                         + t2(lat, long,
+#                              k = c(10, 10), # try default 10 knots
+#                              bs = 'cr'),
+#                  random = ~(1|State/GEOID),
+#                  data = bc_lat_lon) 
+# 
+# summary(bc_tensor_mod_10$gam)
+# summary(bc_tensor_mod_10$mer)
+# bc_tensor_mod_10$gam
+# 
+# ## save model output as RDS to read back in later
+# saveRDS(bc_tensor_mod_10,
+#         file = "../intermediate/model_outputs/spatial/main_effects_only/bc_tensor_10knots.rds")
+bc_tensor_mod_10 = readRDS("../intermediate/model_outputs/spatial/main_effects_only/bc_tensor_10knots.rds")
+bc_tensor_mod_10
+summary(bc_tensor_mod_10$mer)
+summary(bc_tensor_mod_10$mer)$coefficients[2,2]
+
+## Extract 95% CI: point estimate, LL, UL
+paste(summary(bc_tensor_mod_10$mer)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(bc_tensor_mod_10$mer)$coefficients[2,1] - 1.96*summary(bc_tensor_mod_10$mer)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(bc_tensor_mod_10$mer)$coefficients[2,1] + 1.96*summary(bc_tensor_mod_10$mer)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+paste(summary(bc_tensor_mod_10$mer)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(bc_tensor_mod_10$mer)$coefficients[2,1] - 1.96*summary(bc_tensor_mod_10$mer)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(bc_tensor_mod_10$mer)$coefficients[2,1] + 1.96*summary(bc_tensor_mod_10$mer)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+```
+
+## With county type x year interX term
+#### 5 knots
+```{r}
+# Run GAMM with tensor smooth term
+# 
+# bc_tensor_mod_5 =  gamm4(bc ~ county_type*as.factor(year) + popd_q + hhinc_q
+#                         + t2(lat, long,
+#                              k = c(5, 5),
+#                              bs = 'cr'),
+#                  random = ~(1|State/GEOID),
+#                  data = bc_lat_lon) # try 5 knots first
+# 
+# summary(bc_tensor_mod_5$gam)
+# summary(bc_tensor_mod_5$mer)
+# 
+# # save model output as RDS to read back in later
+# saveRDS(bc_tensor_mod_5,
+#         file = "../intermediate/model_outputs/spatial/bc_tensor_5knots.rds")
+# bc_tensor_mod_5 = readRDS("../intermediate/model_outputs/spatial/bc_tensor_5knots.rds")
+# bc_tensor_mod_5
+# summary(bc_tensor_mod_5$gam)
+```
+
+###### GAMM4 t2 Difference in time trends plot
+```{r}
+# # vcov matrix
+# native_yr_vcov <- vcov(bc_tensor_mod_5$gam)[c(2,seq(38,54)), c(2,seq(38,54))]
+# # calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+# var_vector = c()
+# for (i in 2:18){
+#   var_vector[1] <- native_yr_vcov[1,1]
+#   var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+# }
+# native_yr_vcov[1,1] + native_yr_vcov[2,2] + 2 * native_yr_vcov[2,1]
+# 
+# length(unique(native_yr_vcov))
+# sd_vector <- sqrt(var_vector)
+# 
+# #matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+# bc_decline_model_all <- data.frame()
+# bc_decline_model_all[1,1] <- summary(bc_tensor_mod_5$gam)$p.coeff[2] # county type main effect estimate (baseline year)
+# bc_decline_model_all[1,2] <- summary(bc_tensor_mod_5$gam)$p.coeff[2] - 1.96*sd_vector[1] # LL 95% CI
+# bc_decline_model_all[1,3] <- summary(bc_tensor_mod_5$gam)$p.coeff[2] + 1.96*sd_vector[1] # UL 95% CI
+# 
+# # fill in matrix thru loop for every following year
+# yr_ct <- 38
+# for (i in 2:18){
+#   bc_decline_model_all[i,1] <- summary(bc_tensor_mod_5$gam)$p.coeff[2]+
+#     summary(bc_tensor_mod_5$gam)$p.coeff[yr_ct]
+#   bc_decline_model_all[i,2] <- summary(bc_tensor_mod_5$gam)$p.coeff[2]+
+#     summary(bc_tensor_mod_5$gam)$p.coeff[yr_ct] - 1.96*sd_vector[i]
+#   bc_decline_model_all[i,3] <- summary(bc_tensor_mod_5$gam)$p.coeff[2]+
+#     summary(bc_tensor_mod_5$gam)$p.coeff[yr_ct] + 1.96*sd_vector[i]
+#   yr_ct <- yr_ct + 1
+# }
+# # set col names
+# colnames(bc_decline_model_all) <- c('estimate', 'cl_lower', 'cl_upper')
+# bc_decline_model_all$year <- seq(2000, 2017)
+# 
+# #PLOT OF TOTAL EFFECT OF NATIVE OVER TIME
+# modelsp_interx_plot <-ggplot() + 
+#   theme_linedraw() + 
+#   geom_line(data = bc_decline_model_all,
+#             aes(x=year, y = estimate)) +
+#   geom_line(data=bc_decline_model_all,
+#             aes(x=year, y=cl_lower), linetype = "dashed") +
+#     geom_line(data=bc_decline_model_all,
+#             aes(x=year, y=cl_upper), linetype = "dashed") +
+#   ylim(-0.5, 0.5) +
+#   # ggtitle(expression(paste("Modeled ", PM[2.5], " Difference in AI vs. Non-AI Populated Counties"))) +
+#   ylab(expression(paste("Mean Difference in BC (", mu, "g/", m^3, ")"))) +
+#   # xlab("Year") +
+#   theme(plot.title = element_text(size = 18),
+#         axis.title = element_text(size = 16),
+#         axis.text = element_text(size = 12),
+#         # axis.title.x = element_blank(),
+#         # axis.title.y = element_blank()
+#         ) +
+#   guides(x =  guide_axis(angle = 45)) +
+#   scale_x_continuous(breaks = seq(2000,2018,1), expand = c(0, 0)) + 
+#   geom_hline(yintercept=0, linetype="solid", color = "red") 
+# modelsp_interx_plot
+# ggsave("../figures/effectmod_plots/sensitivity/spatial/bc_interx_t2_5knots.png")
+```
+
+
+#### 10 knots
+```{r cache = TRUE}
+# bc_tensor_mod_10 =  gamm4(bc ~ county_type*as.factor(year) + popd_q + hhinc_q
+#                         + t2(lat, long,
+#                              k = c(10, 10),
+#                              bs = 'cr'),
+#                  random = ~(1|State/GEOID),
+#                  data = bc_lat_lon) # try default 10 knots
+# 
+# summary(bc_tensor_mod_10$gam)
+# summary(bc_tensor_mod_10$mer)
+# bc_tensor_mod_10$gam
+# 
+# # save model output as RDS to read back in later
+# saveRDS(bc_tensor_mod_10,
+#         file = "../intermediate/model_outputs/spatial/bc_tensor_10knots.rds")
+bc_tensor_mod_10 = readRDS("../intermediate/model_outputs/spatial/bc_tensor_10knots.rds")
+bc_tensor_mod_10
+summary(bc_tensor_mod_10$gam)
+
+```
+
+###### GAMM4 t2 Difference in time trends plot
+```{r}
+# vcov matrix
+native_yr_vcov <- vcov(bc_tensor_mod_10$gam)[c(2,seq(38,54)), c(2,seq(38,54))]
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+native_yr_vcov[1,1] + native_yr_vcov[2,2] + 2 * native_yr_vcov[2,1]
+
+length(unique(native_yr_vcov))
+sd_vector <- sqrt(var_vector)
+
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+bc_decline_model_all <- data.frame()
+bc_decline_model_all[1,1] <- summary(bc_tensor_mod_10$gam)$p.coeff[2] # county type main effect estimate (baseline year)
+bc_decline_model_all[1,2] <- summary(bc_tensor_mod_10$gam)$p.coeff[2] - 1.96*sd_vector[1] # LL 95% CI
+bc_decline_model_all[1,3] <- summary(bc_tensor_mod_10$gam)$p.coeff[2] + 1.96*sd_vector[1] # UL 95% CI
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  bc_decline_model_all[i,1] <- summary(bc_tensor_mod_10$gam)$p.coeff[2]+
+    summary(bc_tensor_mod_10$gam)$p.coeff[yr_ct]
+  bc_decline_model_all[i,2] <- summary(bc_tensor_mod_10$gam)$p.coeff[2]+
+    summary(bc_tensor_mod_10$gam)$p.coeff[yr_ct] - 1.96*sd_vector[i]
+  bc_decline_model_all[i,3] <- summary(bc_tensor_mod_10$gam)$p.coeff[2]+
+    summary(bc_tensor_mod_10$gam)$p.coeff[yr_ct] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+# set col names
+colnames(bc_decline_model_all) <- c('estimate', 'cl_lower', 'cl_upper')
+bc_decline_model_all$year <- seq(2000, 2017)
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME
+modelsp_interx_plot <-ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = bc_decline_model_all,
+            aes(x=year, y = estimate)) +
+  geom_line(data=bc_decline_model_all,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+    geom_line(data=bc_decline_model_all,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.5, 0.5) +
+  # ggtitle(expression(paste("Modeled ", PM[2.5], " Difference in AI vs. Non-AI Populated Counties"))) +
+  ylab(expression(paste("Mean Difference in BC (", mu, "g/", m^3, ")"))) +
+  xlab("Year") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x = element_blank(),
+        # axis.title.y = element_blank()
+        ) +
+  guides(x =  guide_axis(angle = 45)) +
+  scale_x_continuous(breaks = seq(2000,2018,1), expand = c(0, 0)) + 
+  geom_hline(yintercept=0, linetype="solid", color = "red") 
+modelsp_interx_plot
+ggsave("../figures/effectmod_plots/sensitivity/spatial/bc_interx_t2_10knots.png")
+```
+
+
+##### set tensor term to 20 knots for lat and lon
+
+```{r cache = TRUE}
+# gc()
+# bc_tensor_mod_20 =  gamm4(bc ~ county_type*as.factor(year) + popd_q + hhinc_q
+#                         + t2(lat, long, 
+#                              k = c(20, 20),
+#                              bs = 'cr'),
+#                  random = ~(1|State/GEOID),
+#                  data = bc_lat_lon) # try 20 knots 
+# 
+# summary(bc_tensor_mod_20$gam)
+# summary(bc_tensor_mod_20$mer)
+# bc_tensor_mod_20$gam
+# 
+# 
+# ## save model output as RDS to read back in later
+# saveRDS(bc_tensor_mod_20,
+#         file = "../intermediate/model_outputs/spatial/bc_tensor_mod_20.rds")
+bc_tensor_mod_20 = readRDS("../intermediate/model_outputs/spatial/bc_tensor_mod_20.rds")
+bc_tensor_mod_20
+summary(bc_tensor_mod_20$gam)
+```
+###### GAMM4 t2 Difference in time trends plot: 20 knots
+
+```{r}
+# vcov matrix
+native_yr_vcov <- vcov(bc_tensor_mod_20$gam)[c(2,seq(38,54)), c(2,seq(38,54))]
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+native_yr_vcov[1,1] + native_yr_vcov[2,2] + 2 * native_yr_vcov[2,1]
+
+length(unique(native_yr_vcov))
+sd_vector <- sqrt(var_vector)
+
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+bc_decline_model_all <- data.frame()
+bc_decline_model_all[1,1] <- summary(bc_tensor_mod_20$gam)$p.coeff[2] # county type main effect estimate (baseline year)
+bc_decline_model_all[1,2] <- summary(bc_tensor_mod_20$gam)$p.coeff[2] - 1.96*sd_vector[1] # LL 95% CI
+bc_decline_model_all[1,3] <- summary(bc_tensor_mod_20$gam)$p.coeff[2] + 1.96*sd_vector[1] # UL 95% CI
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  bc_decline_model_all[i,1] <- summary(bc_tensor_mod_20$gam)$p.coeff[2]+
+    summary(bc_tensor_mod_20$gam)$p.coeff[yr_ct]
+  bc_decline_model_all[i,2] <- summary(bc_tensor_mod_20$gam)$p.coeff[2]+
+    summary(bc_tensor_mod_20$gam)$p.coeff[yr_ct] - 1.96*sd_vector[i]
+  bc_decline_model_all[i,3] <- summary(bc_tensor_mod_20$gam)$p.coeff[2]+
+    summary(bc_tensor_mod_20$gam)$p.coeff[yr_ct] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+# set col names
+colnames(bc_decline_model_all) <- c('estimate', 'cl_lower', 'cl_upper')
+bc_decline_model_all$year <- seq(2000, 2017)
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME
+modelsp_interx_plot <-ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = bc_decline_model_all,
+            aes(x=year, y = estimate)) +
+  geom_line(data=bc_decline_model_all,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+    geom_line(data=bc_decline_model_all,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.5, 0.5) +
+  # ggtitle(expression(paste("Modeled ", PM[2.5], " Difference in AI vs. Non-AI Populated Counties"))) +
+  ylab(expression(paste("Mean Difference in BC (", mu, "g/", m^3, ")"))) +
+  xlab("Year") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        # axis.title.x = element_blank(),
+        # axis.title.y = element_blank()
+        ) +
+  guides(x =  guide_axis(angle = 45)) +
+  scale_x_continuous(breaks = seq(2000,2018,1), expand = c(0, 0)) + 
+  geom_hline(yintercept=0, linetype="solid", color = "red") 
+modelsp_interx_plot
+ggsave("../figures/effectmod_plots/sensitivity/spatial/bc_interx_t2_20.png")
+```

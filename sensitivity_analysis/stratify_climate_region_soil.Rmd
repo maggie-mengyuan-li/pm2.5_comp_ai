@@ -1,0 +1,882 @@
+---
+title: "Sensitivity Analyses: Stratified for Climate Regions"
+author: "Maggie Li (ml4424)"
+date: "4/13/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load libraries}
+library(tidyverse)
+library(gridExtra)
+library(grid)
+library(ggplot2)
+library(lattice)
+library(lme4)
+library(gamm4)
+```
+
+```{r Read in data}
+setwd('..') # set wd to one folder up, pm2.5_comp_ai master folder
+soil_ai_join = read_csv("data/county_concentrations/joined_dta/soil_ai_join.csv")
+```
+
+## Secondary Analysis: Stratify by climate region (yes, all 9 but combining the Ohio Valley, Northeast, and Southeast Regions into one strata given the low number of AI-populated counties across these states.)
+
+```{r table 1 check number of counties}
+# check # of counties in West by county type
+ai_county_fips = read_csv("../data/ai_counties.csv") 
+
+nai_county_fips = read_csv("../data/nai_counties.csv") %>% 
+  filter(!str_detect(County, "51515")) # drop Bedford City since it was incorporated into Bedford County in the middle of the study period
+
+covariates = read_csv("../data/covariates.csv") %>% 
+  mutate(County = str_replace(County, "46113", "46102")) # edit 46113 to 46102 to not drop counties
+
+# edit 10/26/2022 select Western counties based on feedback from committee
+ai_county_fips %>% 
+  left_join(covariates) %>% 
+  filter(State %in% c(53, 41, 6, 32, 16, 30, 56, 8, 49, 4, 35)) %>% 
+  nrow()
+
+nai_county_fips %>% 
+  left_join(covariates) %>% 
+  filter(State %in% c(53, 41, 6, 32, 16, 30, 56, 8, 49, 4, 35)) %>% 
+  nrow()
+
+```
+
+## Soil
+### Stratify dataset by NOAA climate region
+```{r dfs filter by climate region}
+northwest_soil_ai_join = soil_ai_join %>% 
+  filter(Climate_Zone == "Northwest")
+
+west_soil_ai_join = soil_ai_join %>% 
+  filter(Climate_Zone == "West")
+
+northern_plains_soil_ai_join = soil_ai_join %>% 
+  filter(Climate_Zone == "West North Central")
+
+southwest_soil_ai_join = soil_ai_join %>% 
+  filter(Climate_Zone == "Southwest")
+
+upper_midwest_soil_ai_join = soil_ai_join %>% 
+  filter(Climate_Zone == "East North Central")
+
+south_soil_ai_join = soil_ai_join %>% 
+  filter(Climate_Zone == "South")
+
+east_soil_ai_join = soil_ai_join %>% 
+  filter(Climate_Zone %in% c("Central", "Southeast", "Northeast"))
+
+northwest_west_soil_ai_join = soil_ai_join %>% 
+  filter(Climate_Zone %in% c("Northwest", "West"))
+```
+
+### Northwest
+```{r run models}
+# full adj model
+soil_full_northwest = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = northwest_soil_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(soil_full_northwest)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(soil_full_northwest)$coefficients[2,1] - 1.96*summary(soil_full_northwest)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(soil_full_northwest)$coefficients[2,1] + 1.96*summary(soil_full_northwest)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(soil_full_northwest)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(soil_full_northwest)$coefficients[2,1] - 1.96*summary(soil_full_northwest)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(soil_full_northwest)$coefficients[2,1] + 1.96*summary(soil_full_northwest)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+soil_full_northwest_interx = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = northwest_soil_ai_join, REML=FALSE)
+summary(soil_full_northwest_interx)
+
+```
+
+```{r soil interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(soil_full_northwest_interx)[c(2,seq(37,53)), c(2,seq(37,53))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+soil_decline_northwest <- data.frame()
+soil_decline_northwest[1,1] <- summary(soil_full_northwest_interx)$coefficients[2,1]
+soil_decline_northwest[1,2] <- summary(soil_full_northwest_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+soil_decline_northwest[1,3] <- summary(soil_full_northwest_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 37
+for (i in 2:18){
+  soil_decline_northwest[i,1] <- summary(soil_full_northwest_interx)$coefficients[2,1]+
+    summary(soil_full_northwest_interx)$coefficients[yr_ct,1]
+  
+  soil_decline_northwest[i,2] <- summary(soil_full_northwest_interx)$coefficients[2,1]+
+    summary(soil_full_northwest_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  soil_decline_northwest[i,3] <- summary(soil_full_northwest_interx)$coefficients[2,1]+
+    summary(soil_full_northwest_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+soil_decline_northwest
+
+colnames(soil_decline_northwest) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+soil_decline_northwest$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+soil_northwest_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = soil_decline_northwest,
+            aes(x=year, y = estimate)) +
+  geom_line(data=soil_decline_northwest,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=soil_decline_northwest,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in Dust (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+soil_northwest_interx_plot
+ggsave("../figures/effectmod_plots/secondary/strat_climate_region/soil_northwest.png", 
+       width = 6, height = 4, dpi = 300)
+```
+
+### West
+```{r run models}
+# full adj model
+soil_full_west = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = west_soil_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(soil_full_west)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(soil_full_west)$coefficients[2,1] - 1.96*summary(soil_full_west)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(soil_full_west)$coefficients[2,1] + 1.96*summary(soil_full_west)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(soil_full_west)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(soil_full_west)$coefficients[2,1] - 1.96*summary(soil_full_west)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(soil_full_west)$coefficients[2,1] + 1.96*summary(soil_full_west)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+soil_full_west_interx = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = west_soil_ai_join, REML=FALSE)
+summary(soil_full_west_interx)
+
+```
+
+```{r soil interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(soil_full_west_interx)[c(2,seq(37,53)), c(2,seq(37,53))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+soil_decline_west <- data.frame()
+soil_decline_west[1,1] <- summary(soil_full_west_interx)$coefficients[2,1]
+soil_decline_west[1,2] <- summary(soil_full_west_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+soil_decline_west[1,3] <- summary(soil_full_west_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 37
+for (i in 2:18){
+  soil_decline_west[i,1] <- summary(soil_full_west_interx)$coefficients[2,1]+
+    summary(soil_full_west_interx)$coefficients[yr_ct,1]
+  
+  soil_decline_west[i,2] <- summary(soil_full_west_interx)$coefficients[2,1]+
+    summary(soil_full_west_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  soil_decline_west[i,3] <- summary(soil_full_west_interx)$coefficients[2,1]+
+    summary(soil_full_west_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+soil_decline_west
+
+colnames(soil_decline_west) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+soil_decline_west$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+soil_west_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = soil_decline_west,
+            aes(x=year, y = estimate)) +
+  geom_line(data=soil_decline_west,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=soil_decline_west,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in Dust (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+soil_west_interx_plot
+ggsave("../figures/effectmod_plots/secondary/strat_climate_region/soil_west.png", 
+       width = 6, height = 4, dpi = 300)
+
+```
+
+
+### Northwest AND West
+```{r run models}
+# full adj model
+soil_full_northwest_west = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = northwest_west_soil_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(soil_full_northwest_west)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(soil_full_northwest_west)$coefficients[2,1] - 1.96*summary(soil_full_northwest_west)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(soil_full_northwest_west)$coefficients[2,1] + 1.96*summary(soil_full_northwest_west)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(soil_full_northwest_west)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(soil_full_northwest_west)$coefficients[2,1] - 1.96*summary(soil_full_northwest_west)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(soil_full_northwest_west)$coefficients[2,1] + 1.96*summary(soil_full_northwest_west)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+soil_full_northwest_west_interx = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = northwest_west_soil_ai_join, REML=FALSE)
+summary(soil_full_northwest_west_interx)
+
+```
+
+```{r soil interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(soil_full_northwest_west_interx)[c(2,seq(37,53)), c(2,seq(37,53))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+soil_decline_northwest_west <- data.frame()
+soil_decline_northwest_west[1,1] <- summary(soil_full_northwest_west_interx)$coefficients[2,1]
+soil_decline_northwest_west[1,2] <- summary(soil_full_northwest_west_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+soil_decline_northwest_west[1,3] <- summary(soil_full_northwest_west_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 37
+for (i in 2:18){
+  soil_decline_northwest_west[i,1] <- summary(soil_full_northwest_west_interx)$coefficients[2,1]+
+    summary(soil_full_northwest_west_interx)$coefficients[yr_ct,1]
+  
+  soil_decline_northwest_west[i,2] <- summary(soil_full_northwest_west_interx)$coefficients[2,1]+
+    summary(soil_full_northwest_west_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  soil_decline_northwest_west[i,3] <- summary(soil_full_northwest_west_interx)$coefficients[2,1]+
+    summary(soil_full_northwest_west_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+soil_decline_northwest_west
+
+colnames(soil_decline_northwest_west) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+soil_decline_northwest_west$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+soil_northwest_west_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = soil_decline_northwest_west,
+            aes(x=year, y = estimate)) +
+  geom_line(data=soil_decline_northwest_west,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=soil_decline_northwest_west,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in Soil (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+soil_northwest_west_interx_plot
+ggsave("../figures/effectmod_plots/secondary/strat_climate_region/soil_northwest_west.png", 
+       width = 6, height = 4, dpi = 300)
+```
+
+### Northern Rockies and Plains
+```{r run models}
+# full adj model
+soil_full_northern_plains = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = northern_plains_soil_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(soil_full_northern_plains)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(soil_full_northern_plains)$coefficients[2,1] - 1.96*summary(soil_full_northern_plains)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(soil_full_northern_plains)$coefficients[2,1] + 1.96*summary(soil_full_northern_plains)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(soil_full_northern_plains)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(soil_full_northern_plains)$coefficients[2,1] - 1.96*summary(soil_full_northern_plains)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(soil_full_northern_plains)$coefficients[2,1] + 1.96*summary(soil_full_northern_plains)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+soil_full_northern_plains_interx = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = northern_plains_soil_ai_join, REML=FALSE)
+summary(soil_full_northern_plains_interx)
+
+```
+
+```{r soil interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(soil_full_northern_plains_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+soil_decline_northern_plains <- data.frame()
+soil_decline_northern_plains[1,1] <- summary(soil_full_northern_plains_interx)$coefficients[2,1]
+soil_decline_northern_plains[1,2] <- summary(soil_full_northern_plains_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+soil_decline_northern_plains[1,3] <- summary(soil_full_northern_plains_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  soil_decline_northern_plains[i,1] <- summary(soil_full_northern_plains_interx)$coefficients[2,1]+
+    summary(soil_full_northern_plains_interx)$coefficients[yr_ct,1]
+  
+  soil_decline_northern_plains[i,2] <- summary(soil_full_northern_plains_interx)$coefficients[2,1]+
+    summary(soil_full_northern_plains_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  soil_decline_northern_plains[i,3] <- summary(soil_full_northern_plains_interx)$coefficients[2,1]+
+    summary(soil_full_northern_plains_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+soil_decline_northern_plains
+
+colnames(soil_decline_northern_plains) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+soil_decline_northern_plains$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+soil_northern_plains_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = soil_decline_northern_plains,
+            aes(x=year, y = estimate)) +
+  geom_line(data=soil_decline_northern_plains,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=soil_decline_northern_plains,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in Dust (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+soil_northern_plains_interx_plot
+ggsave("../figures/effectmod_plots/secondary/strat_climate_region/soil_northern_plains.png",
+       width = 6, height = 4, dpi = 300)
+```
+### Southwest
+```{r run models}
+# full adj model
+soil_full_southwest = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = southwest_soil_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(soil_full_southwest)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(soil_full_southwest)$coefficients[2,1] - 1.96*summary(soil_full_southwest)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(soil_full_southwest)$coefficients[2,1] + 1.96*summary(soil_full_southwest)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(soil_full_southwest)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(soil_full_southwest)$coefficients[2,1] - 1.96*summary(soil_full_southwest)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(soil_full_southwest)$coefficients[2,1] + 1.96*summary(soil_full_southwest)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+soil_full_southwest_interx = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = southwest_soil_ai_join, REML=FALSE)
+summary(soil_full_southwest_interx)
+
+```
+
+```{r soil interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(soil_full_southwest_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+# matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+soil_decline_southwest <- data.frame()
+soil_decline_southwest[1,1] <- summary(soil_full_southwest_interx)$coefficients[2,1]
+soil_decline_southwest[1,2] <- summary(soil_full_southwest_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+soil_decline_southwest[1,3] <- summary(soil_full_southwest_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  soil_decline_southwest[i,1] <- summary(soil_full_southwest_interx)$coefficients[2,1]+
+    summary(soil_full_southwest_interx)$coefficients[yr_ct,1]
+  
+  soil_decline_southwest[i,2] <- summary(soil_full_southwest_interx)$coefficients[2,1]+
+    summary(soil_full_southwest_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  soil_decline_southwest[i,3] <- summary(soil_full_southwest_interx)$coefficients[2,1]+
+    summary(soil_full_southwest_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+soil_decline_southwest
+
+colnames(soil_decline_southwest) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+soil_decline_southwest$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+soil_southwest_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = soil_decline_southwest,
+            aes(x=year, y = estimate)) +
+  geom_line(data=soil_decline_southwest,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=soil_decline_southwest,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in Dust (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+soil_southwest_interx_plot
+ggsave("../figures/effectmod_plots/secondary/strat_climate_region/soil_southwest.png", 
+       width = 6, height = 4, dpi = 300)
+```
+
+### Upper Midwest
+```{r run models}
+# full adj model
+soil_full_upper_midwest = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = upper_midwest_soil_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(soil_full_upper_midwest)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(soil_full_upper_midwest)$coefficients[2,1] - 1.96*summary(soil_full_upper_midwest)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(soil_full_upper_midwest)$coefficients[2,1] + 1.96*summary(soil_full_upper_midwest)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(soil_full_upper_midwest)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(soil_full_upper_midwest)$coefficients[2,1] - 1.96*summary(soil_full_upper_midwest)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(soil_full_upper_midwest)$coefficients[2,1] + 1.96*summary(soil_full_upper_midwest)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+soil_full_upper_midwest_interx = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = upper_midwest_soil_ai_join, REML=FALSE)
+summary(soil_full_upper_midwest_interx)
+
+```
+
+```{r soil interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(soil_full_upper_midwest_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+# matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+soil_decline_upper_midwest <- data.frame()
+soil_decline_upper_midwest[1,1] <- summary(soil_full_upper_midwest_interx)$coefficients[2,1]
+soil_decline_upper_midwest[1,2] <- summary(soil_full_upper_midwest_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+soil_decline_upper_midwest[1,3] <- summary(soil_full_upper_midwest_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  soil_decline_upper_midwest[i,1] <- summary(soil_full_upper_midwest_interx)$coefficients[2,1]+
+    summary(soil_full_upper_midwest_interx)$coefficients[yr_ct,1]
+  
+  soil_decline_upper_midwest[i,2] <- summary(soil_full_upper_midwest_interx)$coefficients[2,1]+
+    summary(soil_full_upper_midwest_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  soil_decline_upper_midwest[i,3] <- summary(soil_full_upper_midwest_interx)$coefficients[2,1]+
+    summary(soil_full_upper_midwest_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+soil_decline_upper_midwest
+
+colnames(soil_decline_upper_midwest) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+soil_decline_upper_midwest$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+soil_upper_midwest_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = soil_decline_upper_midwest,
+            aes(x=year, y = estimate)) +
+  geom_line(data=soil_decline_upper_midwest,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=soil_decline_upper_midwest,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in Dust (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+soil_upper_midwest_interx_plot
+ggsave("../figures/effectmod_plots/secondary/strat_climate_region/soil_upper_midwest.png", 
+       width = 6, height = 4, dpi = 300)
+```
+
+
+### South
+```{r run models}
+# full adj model
+soil_full_south = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = south_soil_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(soil_full_south)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(soil_full_south)$coefficients[2,1] - 1.96*summary(soil_full_south)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(soil_full_south)$coefficients[2,1] + 1.96*summary(soil_full_south)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(soil_full_south)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(soil_full_south)$coefficients[2,1] - 1.96*summary(soil_full_south)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(soil_full_south)$coefficients[2,1] + 1.96*summary(soil_full_south)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+soil_full_south_interx = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = south_soil_ai_join, REML=FALSE)
+summary(soil_full_south_interx)
+
+```
+
+```{r soil interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(soil_full_south_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+# matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+soil_decline_south <- data.frame()
+soil_decline_south[1,1] <- summary(soil_full_south_interx)$coefficients[2,1]
+soil_decline_south[1,2] <- summary(soil_full_south_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+soil_decline_south[1,3] <- summary(soil_full_south_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  soil_decline_south[i,1] <- summary(soil_full_south_interx)$coefficients[2,1]+
+    summary(soil_full_south_interx)$coefficients[yr_ct,1]
+  
+  soil_decline_south[i,2] <- summary(soil_full_south_interx)$coefficients[2,1]+
+    summary(soil_full_south_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  soil_decline_south[i,3] <- summary(soil_full_south_interx)$coefficients[2,1]+
+    summary(soil_full_south_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+soil_decline_south
+
+colnames(soil_decline_south) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+soil_decline_south$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+soil_south_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = soil_decline_south,
+            aes(x=year, y = estimate)) +
+  geom_line(data=soil_decline_south,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=soil_decline_south,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in Dust (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+soil_south_interx_plot
+ggsave("../figures/effectmod_plots/secondary/strat_climate_region/soil_south.png", 
+       width = 6, height = 4, dpi = 300)
+```
+
+
+
+### East
+```{r run models}
+# full adj model
+soil_full_east = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = east_soil_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(soil_full_east)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(soil_full_east)$coefficients[2,1] - 1.96*summary(soil_full_east)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(soil_full_east)$coefficients[2,1] + 1.96*summary(soil_full_east)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(soil_full_east)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(soil_full_east)$coefficients[2,1] - 1.96*summary(soil_full_east)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(soil_full_east)$coefficients[2,1] + 1.96*summary(soil_full_east)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+soil_full_east_interx = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = east_soil_ai_join, REML=FALSE)
+summary(soil_full_east_interx)
+
+```
+
+```{r soil interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(soil_full_east_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+# matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+soil_decline_east <- data.frame()
+soil_decline_east[1,1] <- summary(soil_full_east_interx)$coefficients[2,1]
+soil_decline_east[1,2] <- summary(soil_full_east_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+soil_decline_east[1,3] <- summary(soil_full_east_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  soil_decline_east[i,1] <- summary(soil_full_east_interx)$coefficients[2,1]+
+    summary(soil_full_east_interx)$coefficients[yr_ct,1]
+  
+  soil_decline_east[i,2] <- summary(soil_full_east_interx)$coefficients[2,1]+
+    summary(soil_full_east_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  soil_decline_east[i,3] <- summary(soil_full_east_interx)$coefficients[2,1]+
+    summary(soil_full_east_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+soil_decline_east
+
+colnames(soil_decline_east) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+soil_decline_east$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+soil_east_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = soil_decline_east,
+            aes(x=year, y = estimate)) +
+  geom_line(data=soil_decline_east,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=soil_decline_east,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in Dust (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+soil_east_interx_plot
+ggsave("../figures/effectmod_plots/secondary/strat_climate_region/soil_east.png", 
+       width = 6, height = 4, dpi = 300)
+```

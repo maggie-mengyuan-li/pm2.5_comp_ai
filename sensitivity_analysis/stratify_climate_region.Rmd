@@ -1,0 +1,1916 @@
+---
+title: "Sensitivity Analyses: Stratified for Climate Regions"
+author: "Maggie Li (ml4424)"
+date: "4/13/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load libraries}
+library(tidyverse)
+library(gridExtra)
+library(grid)
+library(ggplot2)
+library(lattice)
+library(lme4)
+library(gamm4)
+```
+
+```{r Read in data}
+setwd('..') # set wd to one folder up, pm2.5_comp_ai master folder
+bc_ai_join = read_csv("data/county_concentrations/joined_dta/bc_ai_join.csv")
+no3_ai_join = read_csv("data/county_concentrations/joined_dta/no3_ai_join.csv")
+so4_ai_join = read_csv("data/county_concentrations/joined_dta/so4_ai_join.csv")
+nh4_ai_join = read_csv("data/county_concentrations/joined_dta/nh4_ai_join.csv")
+om_ai_join = read_csv("data/county_concentrations/joined_dta/om_ai_join.csv")
+soil_ai_join = read_csv("data/county_concentrations/joined_dta/soil_ai_join.csv")
+```
+
+## Sensitivity Analysis: Stratify by climate region (yes, all 9 but combining the Ohio Valley, Northeast, and Southeast Regions into one strata given the low number of AI-populated counties across these states.)
+
+```{r table 1 check number of counties}
+# check # of counties in West by county type
+ai_county_fips = read_csv("../data/ai_counties.csv") 
+
+nai_county_fips = read_csv("../data/nai_counties.csv") %>% 
+  filter(!str_detect(County, "51515")) # drop Bedford City since it was incorporated into Bedford County in the middle of the study period
+
+covariates = read_csv("../data/covariates.csv") %>% 
+  mutate(County = str_replace(County, "46113", "46102")) # edit 46113 to 46102 to not drop counties
+
+# edit 10/26/2022 select Western counties based on feedback from committee
+ai_county_fips %>% 
+  left_join(covariates) %>% 
+  filter(State %in% c(53, 41, 6, 32, 16, 30, 56, 8, 49, 4, 35)) %>% 
+  nrow()
+
+nai_county_fips %>% 
+  left_join(covariates) %>% 
+  filter(State %in% c(53, 41, 6, 32, 16, 30, 56, 8, 49, 4, 35)) %>% 
+  nrow()
+
+```
+
+## BC
+
+```{r dfs filter by climate region}
+northwest_bc_ai_join = bc_ai_join %>% 
+  filter(Climate_Zone == "Northwest")
+
+west_bc_ai_join = bc_ai_join %>% 
+  filter(Climate_Zone == "West")
+
+northern_plains_bc_ai_join = bc_ai_join %>% 
+  filter(Climate_Zone == "West North Central")
+
+southwest_bc_ai_join = bc_ai_join %>% 
+  filter(Climate_Zone == "Southwest")
+
+upper_midwest_bc_ai_join = bc_ai_join %>% 
+  filter(Climate_Zone == "East North Central")
+
+south_bc_ai_join = bc_ai_join %>% 
+  filter(Climate_Zone == "South")
+
+east_bc_ai_join = bc_ai_join %>% 
+  filter(Climate_Zone %in% c("Central", "Southeast", "Northeast"))
+```
+
+### Northwest
+```{r run models}
+# full adj model
+bc_full_northwest = lmer(bc ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = northwest_bc_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(bc_full_northwest)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(bc_full_northwest)$coefficients[2,1] - 1.96*summary(bc_full_northwest)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(bc_full_northwest)$coefficients[2,1] + 1.96*summary(bc_full_northwest)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(bc_full_northwest)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(bc_full_northwest)$coefficients[2,1] - 1.96*summary(bc_full_northwest)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(bc_full_northwest)$coefficients[2,1] + 1.96*summary(bc_full_northwest)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+bc_full_northwest_interx = lmer(bc ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = northwest_bc_ai_join, REML=FALSE)
+summary(bc_full_northwest_interx)
+
+```
+
+```{r BC interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(bc_full_northwest_interx)[c(2,seq(37,53)), c(2,seq(37,53))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+bc_decline_northwest <- data.frame()
+bc_decline_northwest[1,1] <- summary(bc_full_northwest_interx)$coefficients[2,1]
+bc_decline_northwest[1,2] <- summary(bc_full_northwest_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+bc_decline_northwest[1,3] <- summary(bc_full_northwest_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 37
+for (i in 2:18){
+  bc_decline_northwest[i,1] <- summary(bc_full_northwest_interx)$coefficients[2,1]+
+    summary(bc_full_northwest_interx)$coefficients[yr_ct,1]
+  
+  bc_decline_northwest[i,2] <- summary(bc_full_northwest_interx)$coefficients[2,1]+
+    summary(bc_full_northwest_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  bc_decline_northwest[i,3] <- summary(bc_full_northwest_interx)$coefficients[2,1]+
+    summary(bc_full_northwest_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+bc_decline_northwest
+
+colnames(bc_decline_northwest) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+bc_decline_northwest$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+bc_northwest_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = bc_decline_northwest,
+            aes(x=year, y = estimate)) +
+  geom_line(data=bc_decline_northwest,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=bc_decline_northwest,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in BC (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+bc_northwest_interx_plot
+# ggsave("../figures/effectmod_plots/sensitivity/strat_geog_region/bc_west.png", width = 6, height = 4, dpi = 300)
+```
+
+### West
+```{r run models}
+# full adj model
+bc_full_west = lmer(bc ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = west_bc_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(bc_full_west)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(bc_full_west)$coefficients[2,1] - 1.96*summary(bc_full_west)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(bc_full_west)$coefficients[2,1] + 1.96*summary(bc_full_west)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(bc_full_west)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(bc_full_west)$coefficients[2,1] - 1.96*summary(bc_full_west)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(bc_full_west)$coefficients[2,1] + 1.96*summary(bc_full_west)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+bc_full_west_interx = lmer(bc ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = west_bc_ai_join, REML=FALSE)
+summary(bc_full_west_interx)
+
+```
+
+```{r BC interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(bc_full_west_interx)[c(2,seq(37,53)), c(2,seq(37,53))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+bc_decline_west <- data.frame()
+bc_decline_west[1,1] <- summary(bc_full_west_interx)$coefficients[2,1]
+bc_decline_west[1,2] <- summary(bc_full_west_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+bc_decline_west[1,3] <- summary(bc_full_west_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 37
+for (i in 2:18){
+  bc_decline_west[i,1] <- summary(bc_full_west_interx)$coefficients[2,1]+
+    summary(bc_full_west_interx)$coefficients[yr_ct,1]
+  
+  bc_decline_west[i,2] <- summary(bc_full_west_interx)$coefficients[2,1]+
+    summary(bc_full_west_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  bc_decline_west[i,3] <- summary(bc_full_west_interx)$coefficients[2,1]+
+    summary(bc_full_west_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+bc_decline_west
+
+colnames(bc_decline_west) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+bc_decline_west$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+bc_west_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = bc_decline_west,
+            aes(x=year, y = estimate)) +
+  geom_line(data=bc_decline_west,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=bc_decline_west,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in BC (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+bc_northwest_interx_plot
+# ggsave("../figures/effectmod_plots/sensitivity/strat_geog_region/bc_west.png", width = 6, height = 4, dpi = 300)
+
+```
+
+### Northern Rockies and Plains
+```{r run models}
+# full adj model
+bc_full_northern_plains = lmer(bc ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = northern_plains_bc_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(bc_full_northern_plains)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(bc_full_northern_plains)$coefficients[2,1] - 1.96*summary(bc_full_northern_plains)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(bc_full_northern_plains)$coefficients[2,1] + 1.96*summary(bc_full_northern_plains)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(bc_full_northern_plains)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(bc_full_northern_plains)$coefficients[2,1] - 1.96*summary(bc_full_northern_plains)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(bc_full_northern_plains)$coefficients[2,1] + 1.96*summary(bc_full_northern_plains)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+bc_full_northern_plains_interx = lmer(bc ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = northern_plains_bc_ai_join, REML=FALSE)
+summary(bc_full_northern_plains_interx)
+
+```
+
+```{r BC interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(bc_full_northern_plains_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+bc_decline_northern_plains <- data.frame()
+bc_decline_northern_plains[1,1] <- summary(bc_full_northern_plains_interx)$coefficients[2,1]
+bc_decline_northern_plains[1,2] <- summary(bc_full_northern_plains_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+bc_decline_northern_plains[1,3] <- summary(bc_full_northern_plains_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  bc_decline_northern_plains[i,1] <- summary(bc_full_northern_plains_interx)$coefficients[2,1]+
+    summary(bc_full_northern_plains_interx)$coefficients[yr_ct,1]
+  
+  bc_decline_northern_plains[i,2] <- summary(bc_full_northern_plains_interx)$coefficients[2,1]+
+    summary(bc_full_northern_plains_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  bc_decline_northern_plains[i,3] <- summary(bc_full_northern_plains_interx)$coefficients[2,1]+
+    summary(bc_full_northern_plains_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+bc_decline_northern_plains
+
+colnames(bc_decline_northern_plains) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+bc_decline_northern_plains$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+bc_northern_plains_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = bc_decline_northern_plains,
+            aes(x=year, y = estimate)) +
+  geom_line(data=bc_decline_northern_plains,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=bc_decline_northern_plains,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in BC (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+bc_northern_plains_interx_plot
+# ggsave("../figures/effectmod_plots/sensitivity/strat_geog_region/bc_west.png", width = 6, height = 4, dpi = 300)
+```
+### Southwest
+```{r run models}
+# full adj model
+bc_full_southwest = lmer(bc ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = southwest_bc_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(bc_full_southwest)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(bc_full_southwest)$coefficients[2,1] - 1.96*summary(bc_full_southwest)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(bc_full_southwest)$coefficients[2,1] + 1.96*summary(bc_full_southwest)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(bc_full_southwest)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(bc_full_southwest)$coefficients[2,1] - 1.96*summary(bc_full_southwest)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(bc_full_southwest)$coefficients[2,1] + 1.96*summary(bc_full_southwest)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+bc_full_southwest_interx = lmer(bc ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = southwest_bc_ai_join, REML=FALSE)
+summary(bc_full_southwest_interx)
+
+```
+
+```{r BC interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(bc_full_southwest_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+# matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+bc_decline_southwest <- data.frame()
+bc_decline_southwest[1,1] <- summary(bc_full_southwest_interx)$coefficients[2,1]
+bc_decline_southwest[1,2] <- summary(bc_full_southwest_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+bc_decline_southwest[1,3] <- summary(bc_full_southwest_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  bc_decline_southwest[i,1] <- summary(bc_full_southwest_interx)$coefficients[2,1]+
+    summary(bc_full_southwest_interx)$coefficients[yr_ct,1]
+  
+  bc_decline_southwest[i,2] <- summary(bc_full_southwest_interx)$coefficients[2,1]+
+    summary(bc_full_southwest_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  bc_decline_southwest[i,3] <- summary(bc_full_southwest_interx)$coefficients[2,1]+
+    summary(bc_full_southwest_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+bc_decline_southwest
+
+colnames(bc_decline_southwest) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+bc_decline_southwest$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+bc_southwest_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = bc_decline_southwest,
+            aes(x=year, y = estimate)) +
+  geom_line(data=bc_decline_southwest,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=bc_decline_southwest,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in BC (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+bc_southwest_interx_plot
+# ggsave("../figures/effectmod_plots/sensitivity/strat_geog_region/bc_west.png", width = 6, height = 4, dpi = 300)
+```
+
+## SO4
+
+### Stratify dataset by NOAA climate region
+```{r dfs filter by climate region}
+northwest_so4_ai_join = so4_ai_join %>% 
+  filter(Climate_Zone == "Northwest")
+
+west_so4_ai_join = so4_ai_join %>% 
+  filter(Climate_Zone == "West")
+
+northern_plains_so4_ai_join = so4_ai_join %>% 
+  filter(Climate_Zone == "West North Central")
+
+southwest_so4_ai_join = so4_ai_join %>% 
+  filter(Climate_Zone == "Southwest")
+
+upper_midwest_so4_ai_join = so4_ai_join %>% 
+  filter(Climate_Zone == "East North Central")
+
+south_so4_ai_join = so4_ai_join %>% 
+  filter(Climate_Zone == "South")
+
+east_so4_ai_join = so4_ai_join %>% 
+  filter(Climate_Zone %in% c("Central", "Southeast", "Northeast"))
+```
+
+### Northwest
+```{r run models}
+# full adj model
+so4_full_northwest = lmer(so4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = northwest_so4_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(so4_full_northwest)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(so4_full_northwest)$coefficients[2,1] - 1.96*summary(so4_full_northwest)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(so4_full_northwest)$coefficients[2,1] + 1.96*summary(so4_full_northwest)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(so4_full_northwest)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(so4_full_northwest)$coefficients[2,1] - 1.96*summary(so4_full_northwest)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(so4_full_northwest)$coefficients[2,1] + 1.96*summary(so4_full_northwest)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+so4_full_northwest_interx = lmer(so4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = northwest_so4_ai_join, REML=FALSE)
+summary(so4_full_northwest_interx)
+
+```
+
+```{r so4 interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(so4_full_northwest_interx)[c(2,seq(37,53)), c(2,seq(37,53))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+so4_decline_northwest <- data.frame()
+so4_decline_northwest[1,1] <- summary(so4_full_northwest_interx)$coefficients[2,1]
+so4_decline_northwest[1,2] <- summary(so4_full_northwest_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+so4_decline_northwest[1,3] <- summary(so4_full_northwest_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 37
+for (i in 2:18){
+  so4_decline_northwest[i,1] <- summary(so4_full_northwest_interx)$coefficients[2,1]+
+    summary(so4_full_northwest_interx)$coefficients[yr_ct,1]
+  
+  so4_decline_northwest[i,2] <- summary(so4_full_northwest_interx)$coefficients[2,1]+
+    summary(so4_full_northwest_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  so4_decline_northwest[i,3] <- summary(so4_full_northwest_interx)$coefficients[2,1]+
+    summary(so4_full_northwest_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+so4_decline_northwest
+
+colnames(so4_decline_northwest) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+so4_decline_northwest$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+so4_northwest_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = so4_decline_northwest,
+            aes(x=year, y = estimate)) +
+  geom_line(data=so4_decline_northwest,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=so4_decline_northwest,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "SO"[4]^"2-", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+so4_northwest_interx_plot
+# ggsave("../figures/effectmod_plots/sensitivity/strat_geog_region/so4_west.png", width = 6, height = 4, dpi = 300)
+```
+
+### West
+```{r run models}
+# full adj model
+so4_full_west = lmer(so4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = west_so4_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(so4_full_west)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(so4_full_west)$coefficients[2,1] - 1.96*summary(so4_full_west)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(so4_full_west)$coefficients[2,1] + 1.96*summary(so4_full_west)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(so4_full_west)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(so4_full_west)$coefficients[2,1] - 1.96*summary(so4_full_west)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(so4_full_west)$coefficients[2,1] + 1.96*summary(so4_full_west)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+so4_full_west_interx = lmer(so4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = west_so4_ai_join, REML=FALSE)
+summary(so4_full_west_interx)
+
+```
+
+```{r so4 interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(so4_full_west_interx)[c(2,seq(37,53)), c(2,seq(37,53))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+so4_decline_west <- data.frame()
+so4_decline_west[1,1] <- summary(so4_full_west_interx)$coefficients[2,1]
+so4_decline_west[1,2] <- summary(so4_full_west_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+so4_decline_west[1,3] <- summary(so4_full_west_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 37
+for (i in 2:18){
+  so4_decline_west[i,1] <- summary(so4_full_west_interx)$coefficients[2,1]+
+    summary(so4_full_west_interx)$coefficients[yr_ct,1]
+  
+  so4_decline_west[i,2] <- summary(so4_full_west_interx)$coefficients[2,1]+
+    summary(so4_full_west_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  so4_decline_west[i,3] <- summary(so4_full_west_interx)$coefficients[2,1]+
+    summary(so4_full_west_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+so4_decline_west
+
+colnames(so4_decline_west) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+so4_decline_west$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+so4_west_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = so4_decline_west,
+            aes(x=year, y = estimate)) +
+  geom_line(data=so4_decline_west,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=so4_decline_west,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "SO"[4]^"2-", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+so4_west_interx_plot
+# ggsave("../figures/effectmod_plots/sensitivity/strat_geog_region/so4_west.png", width = 6, height = 4, dpi = 300)
+
+```
+
+### Northern Rockies and Plains
+```{r run models}
+# full adj model
+so4_full_northern_plains = lmer(so4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = northern_plains_so4_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(so4_full_northern_plains)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(so4_full_northern_plains)$coefficients[2,1] - 1.96*summary(so4_full_northern_plains)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(so4_full_northern_plains)$coefficients[2,1] + 1.96*summary(so4_full_northern_plains)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(so4_full_northern_plains)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(so4_full_northern_plains)$coefficients[2,1] - 1.96*summary(so4_full_northern_plains)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(so4_full_northern_plains)$coefficients[2,1] + 1.96*summary(so4_full_northern_plains)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+so4_full_northern_plains_interx = lmer(so4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = northern_plains_so4_ai_join, REML=FALSE)
+summary(so4_full_northern_plains_interx)
+
+```
+
+```{r so4 interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(so4_full_northern_plains_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+so4_decline_northern_plains <- data.frame()
+so4_decline_northern_plains[1,1] <- summary(so4_full_northern_plains_interx)$coefficients[2,1]
+so4_decline_northern_plains[1,2] <- summary(so4_full_northern_plains_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+so4_decline_northern_plains[1,3] <- summary(so4_full_northern_plains_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  so4_decline_northern_plains[i,1] <- summary(so4_full_northern_plains_interx)$coefficients[2,1]+
+    summary(so4_full_northern_plains_interx)$coefficients[yr_ct,1]
+  
+  so4_decline_northern_plains[i,2] <- summary(so4_full_northern_plains_interx)$coefficients[2,1]+
+    summary(so4_full_northern_plains_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  so4_decline_northern_plains[i,3] <- summary(so4_full_northern_plains_interx)$coefficients[2,1]+
+    summary(so4_full_northern_plains_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+so4_decline_northern_plains
+
+colnames(so4_decline_northern_plains) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+so4_decline_northern_plains$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+so4_northern_plains_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = so4_decline_northern_plains,
+            aes(x=year, y = estimate)) +
+  geom_line(data=so4_decline_northern_plains,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=so4_decline_northern_plains,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "SO"[4]^"2-", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+so4_northern_plains_interx_plot
+# ggsave("../figures/effectmod_plots/sensitivity/strat_geog_region/so4_west.png", width = 6, height = 4, dpi = 300)
+```
+
+### Southwest
+```{r run models}
+# full adj model
+so4_full_southwest = lmer(so4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = southwest_so4_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(so4_full_southwest)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(so4_full_southwest)$coefficients[2,1] - 1.96*summary(so4_full_southwest)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(so4_full_southwest)$coefficients[2,1] + 1.96*summary(so4_full_southwest)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(so4_full_southwest)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(so4_full_southwest)$coefficients[2,1] - 1.96*summary(so4_full_southwest)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(so4_full_southwest)$coefficients[2,1] + 1.96*summary(so4_full_southwest)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+so4_full_southwest_interx = lmer(so4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = southwest_so4_ai_join, REML=FALSE)
+summary(so4_full_southwest_interx)
+
+```
+
+```{r SO4 interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(so4_full_southwest_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+# matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+so4_decline_southwest <- data.frame()
+so4_decline_southwest[1,1] <- summary(so4_full_southwest_interx)$coefficients[2,1]
+so4_decline_southwest[1,2] <- summary(so4_full_southwest_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+so4_decline_southwest[1,3] <- summary(so4_full_southwest_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  so4_decline_southwest[i,1] <- summary(so4_full_southwest_interx)$coefficients[2,1]+
+    summary(so4_full_southwest_interx)$coefficients[yr_ct,1]
+  
+  so4_decline_southwest[i,2] <- summary(so4_full_southwest_interx)$coefficients[2,1]+
+    summary(so4_full_southwest_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  so4_decline_southwest[i,3] <- summary(so4_full_southwest_interx)$coefficients[2,1]+
+    summary(so4_full_southwest_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+so4_decline_southwest
+
+colnames(so4_decline_southwest) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+so4_decline_southwest$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+so4_southwest_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = so4_decline_southwest,
+            aes(x=year, y = estimate)) +
+  geom_line(data=so4_decline_southwest,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=so4_decline_southwest,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "SO"[4]^"2-", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+so4_southwest_interx_plot
+# ggsave("../figures/effectmod_plots/sensitivity/strat_geog_region/so4_west.png", width = 6, height = 4, dpi = 300)
+```
+
+### Upper Midwest
+```{r run models}
+# full adj model
+so4_full_upper_midwest = lmer(so4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = upper_midwest_so4_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(so4_full_upper_midwest)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(so4_full_upper_midwest)$coefficients[2,1] - 1.96*summary(so4_full_upper_midwest)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(so4_full_upper_midwest)$coefficients[2,1] + 1.96*summary(so4_full_upper_midwest)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(so4_full_upper_midwest)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(so4_full_upper_midwest)$coefficients[2,1] - 1.96*summary(so4_full_upper_midwest)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(so4_full_upper_midwest)$coefficients[2,1] + 1.96*summary(so4_full_upper_midwest)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+so4_full_upper_midwest_interx = lmer(so4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = upper_midwest_so4_ai_join, REML=FALSE)
+summary(so4_full_upper_midwest_interx)
+
+```
+
+```{r so4 interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(so4_full_upper_midwest_interx)[c(2,seq(37,53)), c(2,seq(37,53))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+so4_decline_upper_midwest <- data.frame()
+so4_decline_upper_midwest[1,1] <- summary(so4_full_upper_midwest_interx)$coefficients[2,1]
+so4_decline_upper_midwest[1,2] <- summary(so4_full_upper_midwest_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+so4_decline_upper_midwest[1,3] <- summary(so4_full_upper_midwest_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 37
+for (i in 2:18){
+  so4_decline_upper_midwest[i,1] <- summary(so4_full_upper_midwest_interx)$coefficients[2,1]+
+    summary(so4_full_upper_midwest_interx)$coefficients[yr_ct,1]
+  
+  so4_decline_upper_midwest[i,2] <- summary(so4_full_upper_midwest_interx)$coefficients[2,1]+
+    summary(so4_full_upper_midwest_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  so4_decline_upper_midwest[i,3] <- summary(so4_full_upper_midwest_interx)$coefficients[2,1]+
+    summary(so4_full_upper_midwest_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+so4_decline_upper_midwest
+
+colnames(so4_decline_upper_midwest) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+so4_decline_upper_midwest$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+so4_upper_midwest_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = so4_decline_upper_midwest,
+            aes(x=year, y = estimate)) +
+  geom_line(data=so4_decline_upper_midwest,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=so4_decline_upper_midwest,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "SO"[4]^"2-", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+so4_upper_midwest_interx_plot
+# ggsave("../figures/effectmod_plots/sensitivity/strat_geog_region/so4_west.png", width = 6, height = 4, dpi = 300)
+```
+
+### South
+```{r run models}
+# full adj model
+so4_full_south = lmer(so4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = south_so4_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(so4_full_south)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(so4_full_south)$coefficients[2,1] - 1.96*summary(so4_full_south)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(so4_full_south)$coefficients[2,1] + 1.96*summary(so4_full_south)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(so4_full_south)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(so4_full_south)$coefficients[2,1] - 1.96*summary(so4_full_south)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(so4_full_south)$coefficients[2,1] + 1.96*summary(so4_full_south)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+so4_full_south_interx = lmer(so4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = south_so4_ai_join, REML=FALSE)
+summary(so4_full_south_interx)
+
+```
+
+```{r so4 interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(so4_full_south_interx)[c(2,seq(37,53)), c(2,seq(37,53))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+so4_decline_south <- data.frame()
+so4_decline_south[1,1] <- summary(so4_full_south_interx)$coefficients[2,1]
+so4_decline_south[1,2] <- summary(so4_full_south_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+so4_decline_south[1,3] <- summary(so4_full_south_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 37
+for (i in 2:18){
+  so4_decline_south[i,1] <- summary(so4_full_south_interx)$coefficients[2,1]+
+    summary(so4_full_south_interx)$coefficients[yr_ct,1]
+  
+  so4_decline_south[i,2] <- summary(so4_full_south_interx)$coefficients[2,1]+
+    summary(so4_full_south_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  so4_decline_south[i,3] <- summary(so4_full_south_interx)$coefficients[2,1]+
+    summary(so4_full_south_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+so4_decline_south
+
+colnames(so4_decline_south) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+so4_decline_south$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+so4_south_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = so4_decline_south,
+            aes(x=year, y = estimate)) +
+  geom_line(data=so4_decline_south,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=so4_decline_south,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "SO"[4]^"2-", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+so4_south_interx_plot
+# ggsave("../figures/effectmod_plots/sensitivity/strat_geog_region/so4_west.png", width = 6, height = 4, dpi = 300)
+```
+
+### East
+```{r run models}
+# full adj model
+so4_full_east = lmer(so4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = east_so4_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(so4_full_east)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(so4_full_east)$coefficients[2,1] - 1.96*summary(so4_full_east)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(so4_full_east)$coefficients[2,1] + 1.96*summary(so4_full_east)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(so4_full_east)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(so4_full_east)$coefficients[2,1] - 1.96*summary(so4_full_east)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(so4_full_east)$coefficients[2,1] + 1.96*summary(so4_full_east)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+so4_full_east_interx = lmer(so4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = east_so4_ai_join, REML=FALSE)
+summary(so4_full_east_interx)
+
+```
+
+```{r so4 interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(so4_full_east_interx)[c(2,seq(37,53)), c(2,seq(37,53))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+so4_decline_east <- data.frame()
+so4_decline_east[1,1] <- summary(so4_full_east_interx)$coefficients[2,1]
+so4_decline_east[1,2] <- summary(so4_full_east_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+so4_decline_east[1,3] <- summary(so4_full_east_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 37
+for (i in 2:18){
+  so4_decline_east[i,1] <- summary(so4_full_east_interx)$coefficients[2,1]+
+    summary(so4_full_east_interx)$coefficients[yr_ct,1]
+  
+  so4_decline_east[i,2] <- summary(so4_full_east_interx)$coefficients[2,1]+
+    summary(so4_full_east_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  so4_decline_east[i,3] <- summary(so4_full_east_interx)$coefficients[2,1]+
+    summary(so4_full_east_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+so4_decline_east
+
+colnames(so4_decline_east) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+so4_decline_east$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+so4_east_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = so4_decline_east,
+            aes(x=year, y = estimate)) +
+  geom_line(data=so4_decline_east,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=so4_decline_east,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "SO"[4]^"2-", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+so4_east_interx_plot
+# ggsave("../figures/effectmod_plots/sensitivity/strat_geog_region/so4_west.png", width = 6, height = 4, dpi = 300)
+```
+
+## NH4
+
+### Stratify dataset by NOAA climate region
+```{r dfs filter by climate region}
+northwest_nh4_ai_join = nh4_ai_join %>% 
+  filter(Climate_Zone == "Northwest")
+
+west_nh4_ai_join = nh4_ai_join %>% 
+  filter(Climate_Zone == "West")
+
+northern_plains_nh4_ai_join = nh4_ai_join %>% 
+  filter(Climate_Zone == "West North Central")
+
+southwest_nh4_ai_join = nh4_ai_join %>% 
+  filter(Climate_Zone == "Southwest")
+
+upper_midwest_nh4_ai_join = nh4_ai_join %>% 
+  filter(Climate_Zone == "East North Central")
+
+south_nh4_ai_join = nh4_ai_join %>% 
+  filter(Climate_Zone == "South")
+
+east_nh4_ai_join = nh4_ai_join %>% 
+  filter(Climate_Zone %in% c("Central", "Southeast", "Northeast"))
+```
+
+### Northwest
+```{r run models}
+# full adj model
+nh4_full_northwest = lmer(nh4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = northwest_nh4_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(nh4_full_northwest)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(nh4_full_northwest)$coefficients[2,1] - 1.96*summary(nh4_full_northwest)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(nh4_full_northwest)$coefficients[2,1] + 1.96*summary(nh4_full_northwest)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(nh4_full_northwest)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(nh4_full_northwest)$coefficients[2,1] - 1.96*summary(nh4_full_northwest)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(nh4_full_northwest)$coefficients[2,1] + 1.96*summary(nh4_full_northwest)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+nh4_full_northwest_interx = lmer(nh4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = northwest_nh4_ai_join, REML=FALSE)
+summary(nh4_full_northwest_interx)
+
+```
+
+```{r nh4 interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(nh4_full_northwest_interx)[c(2,seq(37,53)), c(2,seq(37,53))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+nh4_decline_northwest <- data.frame()
+nh4_decline_northwest[1,1] <- summary(nh4_full_northwest_interx)$coefficients[2,1]
+nh4_decline_northwest[1,2] <- summary(nh4_full_northwest_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+nh4_decline_northwest[1,3] <- summary(nh4_full_northwest_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 37
+for (i in 2:18){
+  nh4_decline_northwest[i,1] <- summary(nh4_full_northwest_interx)$coefficients[2,1]+
+    summary(nh4_full_northwest_interx)$coefficients[yr_ct,1]
+  
+  nh4_decline_northwest[i,2] <- summary(nh4_full_northwest_interx)$coefficients[2,1]+
+    summary(nh4_full_northwest_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  nh4_decline_northwest[i,3] <- summary(nh4_full_northwest_interx)$coefficients[2,1]+
+    summary(nh4_full_northwest_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+nh4_decline_northwest
+
+colnames(nh4_decline_northwest) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+nh4_decline_northwest$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+nh4_northwest_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = nh4_decline_northwest,
+            aes(x=year, y = estimate)) +
+  geom_line(data=nh4_decline_northwest,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=nh4_decline_northwest,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "NH"[4]^"+", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+nh4_northwest_interx_plot
+# ggsave("../figures/effectmod_plots/sensitivity/strat_geog_region/nh4_west.png", width = 6, height = 4, dpi = 300)
+```
+
+### West
+```{r run models}
+# full adj model
+nh4_full_west = lmer(nh4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = west_nh4_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(nh4_full_west)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(nh4_full_west)$coefficients[2,1] - 1.96*summary(nh4_full_west)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(nh4_full_west)$coefficients[2,1] + 1.96*summary(nh4_full_west)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(nh4_full_west)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(nh4_full_west)$coefficients[2,1] - 1.96*summary(nh4_full_west)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(nh4_full_west)$coefficients[2,1] + 1.96*summary(nh4_full_west)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+nh4_full_west_interx = lmer(nh4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = west_nh4_ai_join, REML=FALSE)
+summary(nh4_full_west_interx)
+
+```
+
+```{r nh4 interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(nh4_full_west_interx)[c(2,seq(37,53)), c(2,seq(37,53))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+nh4_decline_west <- data.frame()
+nh4_decline_west[1,1] <- summary(nh4_full_west_interx)$coefficients[2,1]
+nh4_decline_west[1,2] <- summary(nh4_full_west_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+nh4_decline_west[1,3] <- summary(nh4_full_west_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 37
+for (i in 2:18){
+  nh4_decline_west[i,1] <- summary(nh4_full_west_interx)$coefficients[2,1]+
+    summary(nh4_full_west_interx)$coefficients[yr_ct,1]
+  
+  nh4_decline_west[i,2] <- summary(nh4_full_west_interx)$coefficients[2,1]+
+    summary(nh4_full_west_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  nh4_decline_west[i,3] <- summary(nh4_full_west_interx)$coefficients[2,1]+
+    summary(nh4_full_west_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+nh4_decline_west
+
+colnames(nh4_decline_west) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+nh4_decline_west$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+nh4_west_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = nh4_decline_west,
+            aes(x=year, y = estimate)) +
+  geom_line(data=nh4_decline_west,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=nh4_decline_west,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "NH"[4]^"+", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+nh4_west_interx_plot
+# ggsave("../figures/effectmod_plots/sensitivity/strat_geog_region/nh4_west.png", width = 6, height = 4, dpi = 300)
+
+```
+
+### Northern Rockies and Plains
+```{r run models}
+# full adj model
+nh4_full_northern_plains = lmer(nh4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = northern_plains_nh4_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(nh4_full_northern_plains)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(nh4_full_northern_plains)$coefficients[2,1] - 1.96*summary(nh4_full_northern_plains)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(nh4_full_northern_plains)$coefficients[2,1] + 1.96*summary(nh4_full_northern_plains)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(nh4_full_northern_plains)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(nh4_full_northern_plains)$coefficients[2,1] - 1.96*summary(nh4_full_northern_plains)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(nh4_full_northern_plains)$coefficients[2,1] + 1.96*summary(nh4_full_northern_plains)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+nh4_full_northern_plains_interx = lmer(nh4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = northern_plains_nh4_ai_join, REML=FALSE)
+summary(nh4_full_northern_plains_interx)
+
+```
+
+```{r nh4 interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(nh4_full_northern_plains_interx)[c(2,seq(37,53)), c(2,seq(37,53))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+nh4_decline_northern_plains <- data.frame()
+nh4_decline_northern_plains[1,1] <- summary(nh4_full_northern_plains_interx)$coefficients[2,1]
+nh4_decline_northern_plains[1,2] <- summary(nh4_full_northern_plains_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+nh4_decline_northern_plains[1,3] <- summary(nh4_full_northern_plains_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 37
+for (i in 2:18){
+  nh4_decline_northern_plains[i,1] <- summary(nh4_full_northern_plains_interx)$coefficients[2,1]+
+    summary(nh4_full_northern_plains_interx)$coefficients[yr_ct,1]
+  
+  nh4_decline_northern_plains[i,2] <- summary(nh4_full_northern_plains_interx)$coefficients[2,1]+
+    summary(nh4_full_northern_plains_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  nh4_decline_northern_plains[i,3] <- summary(nh4_full_northern_plains_interx)$coefficients[2,1]+
+    summary(nh4_full_northern_plains_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+nh4_decline_northern_plains
+
+colnames(nh4_decline_northern_plains) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+nh4_decline_northern_plains$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+nh4_northern_plains_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = nh4_decline_northern_plains,
+            aes(x=year, y = estimate)) +
+  geom_line(data=nh4_decline_northern_plains,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=nh4_decline_northern_plains,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "NH"[4]^"+", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+nh4_northern_plains_interx_plot
+# ggsave("../figures/effectmod_plots/sensitivity/strat_geog_region/nh4_west.png", width = 6, height = 4, dpi = 300)
+```
+
+### Southwest
+```{r run models}
+# full adj model
+nh4_full_southwest = lmer(nh4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = southwest_nh4_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(nh4_full_southwest)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(nh4_full_southwest)$coefficients[2,1] - 1.96*summary(nh4_full_southwest)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(nh4_full_southwest)$coefficients[2,1] + 1.96*summary(nh4_full_southwest)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(nh4_full_southwest)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(nh4_full_southwest)$coefficients[2,1] - 1.96*summary(nh4_full_southwest)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(nh4_full_southwest)$coefficients[2,1] + 1.96*summary(nh4_full_southwest)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+nh4_full_southwest_interx = lmer(nh4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = southwest_nh4_ai_join, REML=FALSE)
+summary(nh4_full_southwest_interx)
+
+```
+
+```{r nh4 interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(nh4_full_southwest_interx)[c(2,seq(37,53)), c(2,seq(37,53))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+# matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+nh4_decline_southwest <- data.frame()
+nh4_decline_southwest[1,1] <- summary(nh4_full_southwest_interx)$coefficients[2,1]
+nh4_decline_southwest[1,2] <- summary(nh4_full_southwest_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+nh4_decline_southwest[1,3] <- summary(nh4_full_southwest_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 37
+for (i in 2:18){
+  nh4_decline_southwest[i,1] <- summary(nh4_full_southwest_interx)$coefficients[2,1]+
+    summary(nh4_full_southwest_interx)$coefficients[yr_ct,1]
+  
+  nh4_decline_southwest[i,2] <- summary(nh4_full_southwest_interx)$coefficients[2,1]+
+    summary(nh4_full_southwest_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  nh4_decline_southwest[i,3] <- summary(nh4_full_southwest_interx)$coefficients[2,1]+
+    summary(nh4_full_southwest_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+nh4_decline_southwest
+
+colnames(nh4_decline_southwest) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+nh4_decline_southwest$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+nh4_southwest_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = nh4_decline_southwest,
+            aes(x=year, y = estimate)) +
+  geom_line(data=nh4_decline_southwest,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=nh4_decline_southwest,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "NH"[4]^"+", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+nh4_southwest_interx_plot
+# ggsave("../figures/effectmod_plots/sensitivity/strat_geog_region/nh4_west.png", width = 6, height = 4, dpi = 300)
+```
+
+### Upper Midwest
+```{r run models}
+# full adj model
+nh4_full_upper_midwest = lmer(nh4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = upper_midwest_nh4_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(nh4_full_upper_midwest)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(nh4_full_upper_midwest)$coefficients[2,1] - 1.96*summary(nh4_full_upper_midwest)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(nh4_full_upper_midwest)$coefficients[2,1] + 1.96*summary(nh4_full_upper_midwest)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(nh4_full_upper_midwest)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(nh4_full_upper_midwest)$coefficients[2,1] - 1.96*summary(nh4_full_upper_midwest)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(nh4_full_upper_midwest)$coefficients[2,1] + 1.96*summary(nh4_full_upper_midwest)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+nh4_full_upper_midwest_interx = lmer(nh4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = upper_midwest_nh4_ai_join, REML=FALSE)
+summary(nh4_full_upper_midwest_interx)
+
+```
+
+```{r nh4 interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(nh4_full_upper_midwest_interx)[c(2,seq(37,53)), c(2,seq(37,53))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+nh4_decline_upper_midwest <- data.frame()
+nh4_decline_upper_midwest[1,1] <- summary(nh4_full_upper_midwest_interx)$coefficients[2,1]
+nh4_decline_upper_midwest[1,2] <- summary(nh4_full_upper_midwest_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+nh4_decline_upper_midwest[1,3] <- summary(nh4_full_upper_midwest_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 37
+for (i in 2:18){
+  nh4_decline_upper_midwest[i,1] <- summary(nh4_full_upper_midwest_interx)$coefficients[2,1]+
+    summary(nh4_full_upper_midwest_interx)$coefficients[yr_ct,1]
+  
+  nh4_decline_upper_midwest[i,2] <- summary(nh4_full_upper_midwest_interx)$coefficients[2,1]+
+    summary(nh4_full_upper_midwest_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  nh4_decline_upper_midwest[i,3] <- summary(nh4_full_upper_midwest_interx)$coefficients[2,1]+
+    summary(nh4_full_upper_midwest_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+nh4_decline_upper_midwest
+
+colnames(nh4_decline_upper_midwest) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+nh4_decline_upper_midwest$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+nh4_upper_midwest_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = nh4_decline_upper_midwest,
+            aes(x=year, y = estimate)) +
+  geom_line(data=nh4_decline_upper_midwest,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=nh4_decline_upper_midwest,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "NH"[4]^"+", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+nh4_upper_midwest_interx_plot
+# ggsave("../figures/effectmod_plots/sensitivity/strat_geog_region/nh4_west.png", width = 6, height = 4, dpi = 300)
+```
+
+### South
+```{r run models}
+# full adj model
+nh4_full_south = lmer(nh4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = south_nh4_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(nh4_full_south)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(nh4_full_south)$coefficients[2,1] - 1.96*summary(nh4_full_south)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(nh4_full_south)$coefficients[2,1] + 1.96*summary(nh4_full_south)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(nh4_full_south)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(nh4_full_south)$coefficients[2,1] - 1.96*summary(nh4_full_south)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(nh4_full_south)$coefficients[2,1] + 1.96*summary(nh4_full_south)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+nh4_full_south_interx = lmer(nh4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = south_nh4_ai_join, REML=FALSE)
+summary(nh4_full_south_interx)
+
+```
+
+```{r nh4 interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(nh4_full_south_interx)[c(2,seq(37,53)), c(2,seq(37,53))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+nh4_decline_south <- data.frame()
+nh4_decline_south[1,1] <- summary(nh4_full_south_interx)$coefficients[2,1]
+nh4_decline_south[1,2] <- summary(nh4_full_south_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+nh4_decline_south[1,3] <- summary(nh4_full_south_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 37
+for (i in 2:18){
+  nh4_decline_south[i,1] <- summary(nh4_full_south_interx)$coefficients[2,1]+
+    summary(nh4_full_south_interx)$coefficients[yr_ct,1]
+  
+  nh4_decline_south[i,2] <- summary(nh4_full_south_interx)$coefficients[2,1]+
+    summary(nh4_full_south_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  nh4_decline_south[i,3] <- summary(nh4_full_south_interx)$coefficients[2,1]+
+    summary(nh4_full_south_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+nh4_decline_south
+
+colnames(nh4_decline_south) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+nh4_decline_south$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+nh4_south_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = nh4_decline_south,
+            aes(x=year, y = estimate)) +
+  geom_line(data=nh4_decline_south,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=nh4_decline_south,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "NH"[4]^"+", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+nh4_south_interx_plot
+# ggsave("../figures/effectmod_plots/sensitivity/strat_geog_region/nh4_west.png", width = 6, height = 4, dpi = 300)
+```
+
+### East
+```{r run models}
+# full adj model
+nh4_full_east = lmer(nh4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q + 
+                      (1|State/County),
+                  data = east_nh4_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(nh4_full_east)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(nh4_full_east)$coefficients[2,1] - 1.96*summary(nh4_full_east)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(nh4_full_east)$coefficients[2,1] + 1.96*summary(nh4_full_east)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+
+paste(summary(nh4_full_east)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(nh4_full_east)$coefficients[2,1] - 1.96*summary(nh4_full_east)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(nh4_full_east)$coefficients[2,1] + 1.96*summary(nh4_full_east)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+nh4_full_east_interx = lmer(nh4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = east_nh4_ai_join, REML=FALSE)
+summary(nh4_full_east_interx)
+
+```
+
+```{r nh4 interX plot from lmer}
+# create vcov matrix of main effects and interX
+native_yr_vcov <- vcov(nh4_full_east_interx)[c(2,seq(37,53)), c(2,seq(37,53))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 18 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+nh4_decline_east <- data.frame()
+nh4_decline_east[1,1] <- summary(nh4_full_east_interx)$coefficients[2,1]
+nh4_decline_east[1,2] <- summary(nh4_full_east_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+nh4_decline_east[1,3] <- summary(nh4_full_east_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 37
+for (i in 2:18){
+  nh4_decline_east[i,1] <- summary(nh4_full_east_interx)$coefficients[2,1]+
+    summary(nh4_full_east_interx)$coefficients[yr_ct,1]
+  
+  nh4_decline_east[i,2] <- summary(nh4_full_east_interx)$coefficients[2,1]+
+    summary(nh4_full_east_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  nh4_decline_east[i,3] <- summary(nh4_full_east_interx)$coefficients[2,1]+
+    summary(nh4_full_east_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+nh4_decline_east
+
+colnames(nh4_decline_east) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+nh4_decline_east$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+nh4_east_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = nh4_decline_east,
+            aes(x=year, y = estimate)) +
+  geom_line(data=nh4_decline_east,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=nh4_decline_east,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "NH"[4]^"+", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+nh4_east_interx_plot
+# ggsave("../figures/effectmod_plots/sensitivity/strat_geog_region/nh4_west.png", width = 6, height = 4, dpi = 300)
+```

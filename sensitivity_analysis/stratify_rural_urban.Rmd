@@ -1,0 +1,1874 @@
+---
+title: "Sensitivity Analyses: Adjustment for NOAA Climate Zone"
+author: "Maggie Li (ml4424)"
+date: "4/13/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load libraries}
+library(tidyverse)
+library(gridExtra)
+library(grid)
+library(ggplot2)
+library(lattice)
+library(lme4)
+library(gamm4)
+```
+
+```{r Read in data}
+setwd('..')
+bc_ai_join = read_csv("data/county_concentrations/joined_dta/bc_ai_join.csv")
+no3_ai_join = read_csv("data/county_concentrations/joined_dta/no3_ai_join.csv")
+so4_ai_join = read_csv("data/county_concentrations/joined_dta/so4_ai_join.csv")
+nh4_ai_join = read_csv("data/county_concentrations/joined_dta/nh4_ai_join.csv")
+om_ai_join = read_csv("data/county_concentrations/joined_dta/om_ai_join.csv")
+soil_ai_join = read_csv("data/county_concentrations/joined_dta/soil_ai_join.csv")
+```
+
+## Secondary Analysis: Additionally adjust for Rurality (addition of this variable in model)
+
+Rural/Urban Classification: downloaded from CDC NCHS https://www.cdc.gov/nchs/data_access/urban_rural.htm
+
+Key: 1 = large central metro; 2 = large fringe metro; 3 = medium metro; 4 = small metro; 5 = micropolitan (population of at least 10,000 but less than 50,000); 6 = non-core
+
+Basically 1-4 is urban/suburban, 5-6 is small town/rural
+
+#### Table S5: get # counties in rural vs. nonrural
+```{r check number of counties}
+## Check # of counties (rural vs. nonrural) by county type
+ai_county_fips = read_csv("../data/ai_counties.csv") 
+
+nai_county_fips = read_csv("../data/nai_counties.csv") %>% 
+  filter(!str_detect(County, "51515")) # drop Bedford City since it was incorporated into Bedford County in the middle of the study period
+
+covariates = read_csv("../data/covariates.csv") %>% mutate(County = str_replace(County, "46113", "46102")) # edit 46113 to 46102 to not drop counties
+
+# rural counties
+ai_county_fips %>% 
+  left_join(covariates) %>% 
+  filter(land_use >= 5) %>% 
+  nrow() ## NOTE 5/2/2023: this is 162 but it was 163 in the first paper...
+
+nai_county_fips %>% 
+  left_join(covariates) %>% 
+  filter(land_use >= 5) %>% 
+  nrow()
+
+# nonrural counties
+ai_county_fips %>% 
+  left_join(covariates) %>% 
+  filter(land_use <= 4) %>% 
+  nrow()
+
+nai_county_fips %>% 
+  left_join(covariates) %>% 
+  filter(land_use <= 4) %>% 
+  nrow()
+
+## Check # of counties (rural vs. nonrural) in all study counties
+library(sf)
+
+# read in all counties shapefile
+counties_shp <- "../data/cb_2018_us_county_500k/cb_2018_us_county_500k.shp"
+all_counties <- st_read(counties_shp, stringsAsFactors = FALSE)
+
+# group all_counties by state fips, exclude territories and hawaii and alaska
+all_counties <- all_counties %>% arrange(STATEFP) %>%
+  filter(STATEFP != "02",
+         STATEFP != "15",
+         STATEFP <= "56")
+unique(all_counties$STATEFP)
+all_counties_df = st_drop_geometry(all_counties)
+all_counties_df %>% 
+  dplyr::rename(County = GEOID) %>% 
+  left_join(covariates) %>% 
+  filter(land_use <= 4) %>% 
+  nrow()
+
+all_counties_df %>% 
+  dplyr::rename(County = GEOID) %>% 
+  left_join(covariates) %>% 
+  filter(land_use >= 5) %>% 
+  nrow()
+
+```
+
+
+The code below estimating concentration differences for each component by AI-pop county type  is almost identical to that found in componentName_analysis.Rmd files. The main difference is we are stratifying by NCHS Rural/Urban classification. We run two different linear mixed effects models, the first with land_use variable <= 4 and the second with land_use variable >= 5.
+
+
+```{r filter small town/rural counties for all components}
+## BC
+rural_bc_ai_join = bc_ai_join %>% 
+  filter(land_use >= 5)
+rural_bc_ai_join
+
+## NH4
+rural_nh4_ai_join = nh4_ai_join %>% 
+  filter(land_use >= 5)
+rural_nh4_ai_join
+
+## NO3
+rural_no3_ai_join = no3_ai_join %>% 
+  filter(land_use >= 5)
+rural_no3_ai_join
+
+## OM
+rural_om_ai_join = om_ai_join %>% 
+  filter(land_use >= 5)
+rural_om_ai_join
+
+## SO4 
+rural_so4_ai_join = so4_ai_join %>% 
+  filter(land_use >= 5)
+rural_so4_ai_join
+
+## Soil
+rural_soil_ai_join = soil_ai_join %>% 
+  filter(land_use >= 5)
+rural_soil_ai_join
+
+```
+
+```{r filter urban/suburban counties for all components}
+## BC
+urban_bc_ai_join = bc_ai_join %>% 
+  filter(land_use <= 4)
+urban_bc_ai_join
+
+## NH4
+urban_nh4_ai_join = nh4_ai_join %>% 
+  filter(land_use <= 4)
+urban_nh4_ai_join
+
+## NO3
+urban_no3_ai_join = no3_ai_join %>% 
+  filter(land_use <= 4)
+urban_no3_ai_join
+
+## OM
+urban_om_ai_join = om_ai_join %>% 
+  filter(land_use <= 4)
+urban_om_ai_join
+
+## SO4 
+urban_so4_ai_join = so4_ai_join %>% 
+  filter(land_use <= 4)
+urban_so4_ai_join
+
+## Soil
+urban_soil_ai_join = soil_ai_join %>% 
+  filter(land_use <= 4)
+urban_soil_ai_join
+```
+
+### BC
+
+```{r rural BC lmer}
+# full adj model
+bc_full_rural = lmer(bc ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    (1|State/County),
+                  data = rural_bc_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(bc_full_rural)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(bc_full_rural)$coefficients[2,1] - 1.96*summary(bc_full_rural)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(bc_full_rural)$coefficients[2,1] + 1.96*summary(bc_full_rural)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+paste(summary(bc_full_rural)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(bc_full_rural)$coefficients[2,1] - 1.96*summary(bc_full_rural)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(bc_full_rural)$coefficients[2,1] + 1.96*summary(bc_full_rural)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+bc_full_rural_interx = lmer(bc ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = rural_bc_ai_join, REML=FALSE)
+summary(bc_full_rural_interx)
+```
+
+```{r rural BC interX plot from lmer}
+# create vcov matrix of main effects and interX
+
+# 8/17/20 edit: first define variable for model function to avoid rerunning it a million times
+native_yr_vcov <- vcov(bc_full_rural_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+native_yr_vcov
+# calculate all the variances for all the years i.e. var(x+y); should be 19 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 18 cols for 18 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+bc_decline_rural <- data.frame()
+bc_decline_rural[1,1] <- summary(bc_full_rural_interx)$coefficients[2,1]
+bc_decline_rural[1,2] <- summary(bc_full_rural_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+bc_decline_rural[1,3] <- summary(bc_full_rural_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  bc_decline_rural[i,1] <- summary(bc_full_rural_interx)$coefficients[2,1]+
+    summary(bc_full_rural_interx)$coefficients[yr_ct,1]
+  
+  bc_decline_rural[i,2] <- summary(bc_full_rural_interx)$coefficients[2,1]+
+    summary(bc_full_rural_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  bc_decline_rural[i,3] <- summary(bc_full_rural_interx)$coefficients[2,1]+
+    summary(bc_full_rural_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+bc_decline_rural
+
+colnames(bc_decline_rural) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+bc_decline_rural$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+bc_rural_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = bc_decline_rural,
+            aes(x=year, y = estimate)) +
+  geom_line(data=bc_decline_rural,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=bc_decline_rural,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in BC (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+bc_rural_interx_plot
+
+bc_decline_rural
+ggsave("../figures/effectmod_plots/sensitivity/rural/bc_rural.png", width = 6, height = 4, dpi = 300)
+
+```
+
+```{r urban BC lmer}
+# full adj model
+bc_full_urban = lmer(bc ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    (1|State/County),
+                  data = urban_bc_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(bc_full_urban)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(bc_full_urban)$coefficients[2,1] - 1.96*summary(bc_full_urban)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(bc_full_urban)$coefficients[2,1] + 1.96*summary(bc_full_urban)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+paste(summary(bc_full_urban)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(bc_full_urban)$coefficients[2,1] - 1.96*summary(bc_full_urban)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(bc_full_urban)$coefficients[2,1] + 1.96*summary(bc_full_urban)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+bc_full_urban_interx = lmer(bc ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = urban_bc_ai_join, REML=FALSE)
+summary(bc_full_urban_interx)
+```
+
+```{r urban BC interX plot from lmer}
+# create vcov matrix of main effects and interX
+
+# 8/17/20 edit: first define variable for model function to avoid rerunning it a million times
+native_yr_vcov <- vcov(bc_full_urban_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+native_yr_vcov
+# calculate all the variances for all the years i.e. var(x+y); should be 19 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 18 cols for 18 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+bc_decline_urban <- data.frame()
+bc_decline_urban[1,1] <- summary(bc_full_urban_interx)$coefficients[2,1]
+bc_decline_urban[1,2] <- summary(bc_full_urban_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+bc_decline_urban[1,3] <- summary(bc_full_urban_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  bc_decline_urban[i,1] <- summary(bc_full_urban_interx)$coefficients[2,1]+
+    summary(bc_full_urban_interx)$coefficients[yr_ct,1]
+  
+  bc_decline_urban[i,2] <- summary(bc_full_urban_interx)$coefficients[2,1]+
+    summary(bc_full_urban_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  bc_decline_urban[i,3] <- summary(bc_full_urban_interx)$coefficients[2,1]+
+    summary(bc_full_urban_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+bc_decline_urban
+
+colnames(bc_decline_urban) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+bc_decline_urban$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+bc_urban_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = bc_decline_urban,
+            aes(x=year, y = estimate)) +
+  geom_line(data=bc_decline_urban,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=bc_decline_urban,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in BC (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+bc_urban_interx_plot
+
+bc_decline_urban
+ggsave("../figures/effectmod_plots/sensitivity/rural/bc_urban.png", width = 6, height = 4, dpi = 300)
+
+```
+
+
+### NH4
+```{r rural NH4 lmer}
+# full adj model
+nh4_full_rural = lmer(nh4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    (1|State/County),
+                  data = rural_nh4_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(nh4_full_rural)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(nh4_full_rural)$coefficients[2,1] - 1.96*summary(nh4_full_rural)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(nh4_full_rural)$coefficients[2,1] + 1.96*summary(nh4_full_rural)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+paste(summary(nh4_full_rural)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(nh4_full_rural)$coefficients[2,1] - 1.96*summary(nh4_full_rural)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(nh4_full_rural)$coefficients[2,1] + 1.96*summary(nh4_full_rural)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+nh4_full_rural_interx = lmer(nh4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = rural_nh4_ai_join, REML=FALSE)
+summary(nh4_full_rural_interx)
+```
+
+```{r rural nh4 interX plot from lmer}
+# create vcov matrix of main effects and interX
+
+# 8/17/20 edit: first define variable for model function to avoid rerunning it a million times
+native_yr_vcov <- vcov(nh4_full_rural_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+native_yr_vcov
+# calculate all the variances for all the years i.e. var(x+y); should be 19 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 18 cols for 18 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+nh4_decline_rural <- data.frame()
+nh4_decline_rural[1,1] <- summary(nh4_full_rural_interx)$coefficients[2,1]
+nh4_decline_rural[1,2] <- summary(nh4_full_rural_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+nh4_decline_rural[1,3] <- summary(nh4_full_rural_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  nh4_decline_rural[i,1] <- summary(nh4_full_rural_interx)$coefficients[2,1]+
+    summary(nh4_full_rural_interx)$coefficients[yr_ct,1]
+  
+  nh4_decline_rural[i,2] <- summary(nh4_full_rural_interx)$coefficients[2,1]+
+    summary(nh4_full_rural_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  nh4_decline_rural[i,3] <- summary(nh4_full_rural_interx)$coefficients[2,1]+
+    summary(nh4_full_rural_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+nh4_decline_rural
+
+colnames(nh4_decline_rural) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+nh4_decline_rural$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+nh4_rural_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = nh4_decline_rural,
+            aes(x=year, y = estimate)) +
+  geom_line(data=nh4_decline_rural,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=nh4_decline_rural,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "NH"["4"]^"+", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+nh4_rural_interx_plot
+
+nh4_decline_rural
+ggsave("../figures/effectmod_plots/sensitivity/rural/nh4_rural.png", width = 6, height = 4, dpi = 300)
+
+```
+
+```{r urban NH4 lmer}
+# full adj model
+nh4_full_urban = lmer(nh4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    (1|State/County),
+                  data = urban_nh4_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(nh4_full_urban)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(nh4_full_urban)$coefficients[2,1] - 1.96*summary(nh4_full_urban)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(nh4_full_urban)$coefficients[2,1] + 1.96*summary(nh4_full_urban)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+paste(summary(nh4_full_urban)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(nh4_full_urban)$coefficients[2,1] - 1.96*summary(nh4_full_urban)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(nh4_full_urban)$coefficients[2,1] + 1.96*summary(nh4_full_urban)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+nh4_full_urban_interx = lmer(nh4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = urban_nh4_ai_join, REML=FALSE)
+summary(nh4_full_urban_interx)
+```
+
+```{r urban nh4 interX plot from lmer}
+# create vcov matrix of main effects and interX
+
+# 8/17/20 edit: first define variable for model function to avoid rerunning it a million times
+native_yr_vcov <- vcov(nh4_full_urban_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+native_yr_vcov
+# calculate all the variances for all the years i.e. var(x+y); should be 19 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 18 cols for 18 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+nh4_decline_urban <- data.frame()
+nh4_decline_urban[1,1] <- summary(nh4_full_urban_interx)$coefficients[2,1]
+nh4_decline_urban[1,2] <- summary(nh4_full_urban_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+nh4_decline_urban[1,3] <- summary(nh4_full_urban_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  nh4_decline_urban[i,1] <- summary(nh4_full_urban_interx)$coefficients[2,1]+
+    summary(nh4_full_urban_interx)$coefficients[yr_ct,1]
+  
+  nh4_decline_urban[i,2] <- summary(nh4_full_urban_interx)$coefficients[2,1]+
+    summary(nh4_full_urban_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  nh4_decline_urban[i,3] <- summary(nh4_full_urban_interx)$coefficients[2,1]+
+    summary(nh4_full_urban_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+nh4_decline_urban
+
+colnames(nh4_decline_urban) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+nh4_decline_urban$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+nh4_urban_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = nh4_decline_urban,
+            aes(x=year, y = estimate)) +
+  geom_line(data=nh4_decline_urban,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=nh4_decline_urban,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "NH"["4"]^"+", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+nh4_urban_interx_plot
+
+nh4_decline_urban
+ggsave("../figures/effectmod_plots/sensitivity/rural/nh4_urban.png", width = 6, height = 4, dpi = 300)
+
+```
+
+## NO3
+```{r rural no3 lmer}
+# full adj model
+no3_full_rural = lmer(no3 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    (1|State/County),
+                  data = rural_no3_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(no3_full_rural)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(no3_full_rural)$coefficients[2,1] - 1.96*summary(no3_full_rural)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(no3_full_rural)$coefficients[2,1] + 1.96*summary(no3_full_rural)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+paste(summary(no3_full_rural)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(no3_full_rural)$coefficients[2,1] - 1.96*summary(no3_full_rural)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(no3_full_rural)$coefficients[2,1] + 1.96*summary(no3_full_rural)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+no3_full_rural_interx = lmer(no3 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = rural_no3_ai_join, REML=FALSE)
+summary(no3_full_rural_interx)
+```
+
+```{r rural no3 interX plot from lmer}
+# create vcov matrix of main effects and interX
+
+# 8/17/20 edit: first define variable for model function to avoid rerunning it a million times
+native_yr_vcov <- vcov(no3_full_rural_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+native_yr_vcov
+# calculate all the variances for all the years i.e. var(x+y); should be 19 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 18 cols for 18 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+no3_decline_rural <- data.frame()
+no3_decline_rural[1,1] <- summary(no3_full_rural_interx)$coefficients[2,1]
+no3_decline_rural[1,2] <- summary(no3_full_rural_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+no3_decline_rural[1,3] <- summary(no3_full_rural_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  no3_decline_rural[i,1] <- summary(no3_full_rural_interx)$coefficients[2,1]+
+    summary(no3_full_rural_interx)$coefficients[yr_ct,1]
+  
+  no3_decline_rural[i,2] <- summary(no3_full_rural_interx)$coefficients[2,1]+
+    summary(no3_full_rural_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  no3_decline_rural[i,3] <- summary(no3_full_rural_interx)$coefficients[2,1]+
+    summary(no3_full_rural_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+no3_decline_rural
+
+colnames(no3_decline_rural) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+no3_decline_rural$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+no3_rural_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = no3_decline_rural,
+            aes(x=year, y = estimate)) +
+  geom_line(data=no3_decline_rural,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=no3_decline_rural,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "NO"["3"]^"-", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+no3_rural_interx_plot
+
+no3_decline_rural
+ggsave("../figures/effectmod_plots/sensitivity/rural/no3_rural.png", width = 6, height = 4, dpi = 300)
+
+```
+
+```{r urban no3 lmer}
+# full adj model
+no3_full_urban = lmer(no3 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    (1|State/County),
+                  data = urban_no3_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(no3_full_urban)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(no3_full_urban)$coefficients[2,1] - 1.96*summary(no3_full_urban)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(no3_full_urban)$coefficients[2,1] + 1.96*summary(no3_full_urban)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+paste(summary(no3_full_urban)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(no3_full_urban)$coefficients[2,1] - 1.96*summary(no3_full_urban)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(no3_full_urban)$coefficients[2,1] + 1.96*summary(no3_full_urban)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+no3_full_urban_interx = lmer(no3 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = urban_no3_ai_join, REML=FALSE)
+summary(no3_full_urban_interx)
+```
+
+```{r urban no3 interX plot from lmer}
+# create vcov matrix of main effects and interX
+
+# 8/17/20 edit: first define variable for model function to avoid rerunning it a million times
+native_yr_vcov <- vcov(no3_full_urban_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+native_yr_vcov
+# calculate all the variances for all the years i.e. var(x+y); should be 19 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 18 cols for 18 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+no3_decline_urban <- data.frame()
+no3_decline_urban[1,1] <- summary(no3_full_urban_interx)$coefficients[2,1]
+no3_decline_urban[1,2] <- summary(no3_full_urban_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+no3_decline_urban[1,3] <- summary(no3_full_urban_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  no3_decline_urban[i,1] <- summary(no3_full_urban_interx)$coefficients[2,1]+
+    summary(no3_full_urban_interx)$coefficients[yr_ct,1]
+  
+  no3_decline_urban[i,2] <- summary(no3_full_urban_interx)$coefficients[2,1]+
+    summary(no3_full_urban_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  no3_decline_urban[i,3] <- summary(no3_full_urban_interx)$coefficients[2,1]+
+    summary(no3_full_urban_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+no3_decline_urban
+
+colnames(no3_decline_urban) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+no3_decline_urban$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+no3_urban_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = no3_decline_urban,
+            aes(x=year, y = estimate)) +
+  geom_line(data=no3_decline_urban,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=no3_decline_urban,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "NO"["3"]^"-", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+no3_urban_interx_plot
+
+no3_decline_urban
+ggsave("../figures/effectmod_plots/sensitivity/rural/no3_urban.png", width = 6, height = 4, dpi = 300)
+
+```
+
+## OM
+
+```{r rural om lmer}
+# full adj model
+om_full_rural = lmer(om ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    (1|State/County),
+                  data = rural_om_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(om_full_rural)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(om_full_rural)$coefficients[2,1] - 1.96*summary(om_full_rural)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(om_full_rural)$coefficients[2,1] + 1.96*summary(om_full_rural)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+paste(summary(om_full_rural)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(om_full_rural)$coefficients[2,1] - 1.96*summary(om_full_rural)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(om_full_rural)$coefficients[2,1] + 1.96*summary(om_full_rural)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+om_full_rural_interx = lmer(om ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = rural_om_ai_join, REML=FALSE)
+summary(om_full_rural_interx)
+```
+
+```{r rural om interX plot from lmer}
+# create vcov matrix of main effects and interX
+
+# 8/17/20 edit: first define variable for model function to avoid rerunning it a million times
+native_yr_vcov <- vcov(om_full_rural_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+native_yr_vcov
+# calculate all the variances for all the years i.e. var(x+y); should be 19 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 18 cols for 18 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+om_decline_rural <- data.frame()
+om_decline_rural[1,1] <- summary(om_full_rural_interx)$coefficients[2,1]
+om_decline_rural[1,2] <- summary(om_full_rural_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+om_decline_rural[1,3] <- summary(om_full_rural_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  om_decline_rural[i,1] <- summary(om_full_rural_interx)$coefficients[2,1]+
+    summary(om_full_rural_interx)$coefficients[yr_ct,1]
+  
+  om_decline_rural[i,2] <- summary(om_full_rural_interx)$coefficients[2,1]+
+    summary(om_full_rural_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  om_decline_rural[i,3] <- summary(om_full_rural_interx)$coefficients[2,1]+
+    summary(om_full_rural_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+om_decline_rural
+
+colnames(om_decline_rural) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+om_decline_rural$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+om_rural_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = om_decline_rural,
+            aes(x=year, y = estimate)) +
+  geom_line(data=om_decline_rural,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=om_decline_rural,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in OM (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+om_rural_interx_plot
+
+om_decline_rural
+ggsave("../figures/effectmod_plots/sensitivity/rural/om_rural.png", width = 6, height = 4, dpi = 300)
+
+```
+
+```{r urban om lmer}
+# full adj model
+om_full_urban = lmer(om ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    (1|State/County),
+                  data = urban_om_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(om_full_urban)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(om_full_urban)$coefficients[2,1] - 1.96*summary(om_full_urban)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(om_full_urban)$coefficients[2,1] + 1.96*summary(om_full_urban)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+paste(summary(om_full_urban)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(om_full_urban)$coefficients[2,1] - 1.96*summary(om_full_urban)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(om_full_urban)$coefficients[2,1] + 1.96*summary(om_full_urban)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+om_full_urban_interx = lmer(om ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = urban_om_ai_join, REML=FALSE)
+summary(om_full_urban_interx)
+```
+
+```{r urban om interX plot from lmer}
+# create vcov matrix of main effects and interX
+
+# 8/17/20 edit: first define variable for model function to avoid rerunning it a million times
+native_yr_vcov <- vcov(om_full_urban_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+native_yr_vcov
+# calculate all the variances for all the years i.e. var(x+y); should be 19 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 18 cols for 18 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+om_decline_urban <- data.frame()
+om_decline_urban[1,1] <- summary(om_full_urban_interx)$coefficients[2,1]
+om_decline_urban[1,2] <- summary(om_full_urban_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+om_decline_urban[1,3] <- summary(om_full_urban_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  om_decline_urban[i,1] <- summary(om_full_urban_interx)$coefficients[2,1]+
+    summary(om_full_urban_interx)$coefficients[yr_ct,1]
+  
+  om_decline_urban[i,2] <- summary(om_full_urban_interx)$coefficients[2,1]+
+    summary(om_full_urban_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  om_decline_urban[i,3] <- summary(om_full_urban_interx)$coefficients[2,1]+
+    summary(om_full_urban_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+om_decline_urban
+
+colnames(om_decline_urban) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+om_decline_urban$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+om_urban_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = om_decline_urban,
+            aes(x=year, y = estimate)) +
+  geom_line(data=om_decline_urban,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=om_decline_urban,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.7, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in OM (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+om_urban_interx_plot
+
+om_decline_urban
+ggsave("../figures/effectmod_plots/sensitivity/rural/om_urban.png", width = 6, height = 4, dpi = 300)
+
+```
+
+## SO4
+
+```{r rural so4 lmer}
+# full adj model
+so4_full_rural = lmer(so4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    (1|State/County),
+                  data = rural_so4_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(so4_full_rural)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(so4_full_rural)$coefficients[2,1] - 1.96*summary(so4_full_rural)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(so4_full_rural)$coefficients[2,1] + 1.96*summary(so4_full_rural)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+paste(summary(so4_full_rural)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(so4_full_rural)$coefficients[2,1] - 1.96*summary(so4_full_rural)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(so4_full_rural)$coefficients[2,1] + 1.96*summary(so4_full_rural)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+so4_full_rural_interx = lmer(so4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = rural_so4_ai_join, REML=FALSE)
+summary(so4_full_rural_interx)
+```
+
+```{r rural so4 interX plot from lmer}
+# create vcov matrix of main effects and interX
+
+# 8/17/20 edit: first define variable for model function to avoid rerunning it a million times
+native_yr_vcov <- vcov(so4_full_rural_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+native_yr_vcov
+# calculate all the variances for all the years i.e. var(x+y); should be 19 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 18 cols for 18 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+so4_decline_rural <- data.frame()
+so4_decline_rural[1,1] <- summary(so4_full_rural_interx)$coefficients[2,1]
+so4_decline_rural[1,2] <- summary(so4_full_rural_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+so4_decline_rural[1,3] <- summary(so4_full_rural_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  so4_decline_rural[i,1] <- summary(so4_full_rural_interx)$coefficients[2,1]+
+    summary(so4_full_rural_interx)$coefficients[yr_ct,1]
+  
+  so4_decline_rural[i,2] <- summary(so4_full_rural_interx)$coefficients[2,1]+
+    summary(so4_full_rural_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  so4_decline_rural[i,3] <- summary(so4_full_rural_interx)$coefficients[2,1]+
+    summary(so4_full_rural_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+so4_decline_rural
+
+colnames(so4_decline_rural) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+so4_decline_rural$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+so4_rural_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = so4_decline_rural,
+            aes(x=year, y = estimate)) +
+  geom_line(data=so4_decline_rural,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=so4_decline_rural,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "SO"["4"]^"2-", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+so4_rural_interx_plot
+
+so4_decline_rural
+ggsave("../figures/effectmod_plots/sensitivity/rural/so4_rural.png", width = 6, height = 4, dpi = 300)
+
+```
+
+```{r urban so4 lmer}
+# full adj model
+so4_full_urban = lmer(so4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    (1|State/County),
+                  data = urban_so4_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(so4_full_urban)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(so4_full_urban)$coefficients[2,1] - 1.96*summary(so4_full_urban)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(so4_full_urban)$coefficients[2,1] + 1.96*summary(so4_full_urban)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+paste(summary(so4_full_urban)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(so4_full_urban)$coefficients[2,1] - 1.96*summary(so4_full_urban)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(so4_full_urban)$coefficients[2,1] + 1.96*summary(so4_full_urban)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+so4_full_urban_interx = lmer(so4 ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = urban_so4_ai_join, REML=FALSE)
+summary(so4_full_urban_interx)
+```
+
+```{r urban so4 interX plot from lmer}
+# create vcov matrix of main effects and interX
+
+# 8/17/20 edit: first define variable for model function to avoid rerunning it a million times
+native_yr_vcov <- vcov(so4_full_urban_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+native_yr_vcov
+# calculate all the variances for all the years i.e. var(x+y); should be 19 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 18 cols for 18 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+so4_decline_urban <- data.frame()
+so4_decline_urban[1,1] <- summary(so4_full_urban_interx)$coefficients[2,1]
+so4_decline_urban[1,2] <- summary(so4_full_urban_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+so4_decline_urban[1,3] <- summary(so4_full_urban_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  so4_decline_urban[i,1] <- summary(so4_full_urban_interx)$coefficients[2,1]+
+    summary(so4_full_urban_interx)$coefficients[yr_ct,1]
+  
+  so4_decline_urban[i,2] <- summary(so4_full_urban_interx)$coefficients[2,1]+
+    summary(so4_full_urban_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  so4_decline_urban[i,3] <- summary(so4_full_urban_interx)$coefficients[2,1]+
+    summary(so4_full_urban_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+so4_decline_urban
+
+colnames(so4_decline_urban) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+so4_decline_urban$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+so4_urban_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = so4_decline_urban,
+            aes(x=year, y = estimate)) +
+  geom_line(data=so4_decline_urban,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=so4_decline_urban,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.75, 0.75) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "SO"["4"]^"2-", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+so4_urban_interx_plot
+
+so4_decline_urban
+ggsave("../figures/effectmod_plots/sensitivity/rural/so4_urban.png", width = 6, height = 4, dpi = 300)
+
+```
+
+## Mineral Dust/Soil
+
+```{r rural soil lmer}
+# full adj model
+soil_full_rural = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    (1|State/County),
+                  data = rural_soil_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(soil_full_rural)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(soil_full_rural)$coefficients[2,1] - 1.96*summary(soil_full_rural)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(soil_full_rural)$coefficients[2,1] + 1.96*summary(soil_full_rural)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+paste(summary(soil_full_rural)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(soil_full_rural)$coefficients[2,1] - 1.96*summary(soil_full_rural)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(soil_full_rural)$coefficients[2,1] + 1.96*summary(soil_full_rural)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+soil_full_rural_interx = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = rural_soil_ai_join, REML=FALSE)
+summary(soil_full_rural_interx)
+```
+
+```{r rural soil interX plot from lmer}
+# create vcov matrix of main effects and interX
+
+# 8/17/20 edit: first define variable for model function to avoid rerunning it a million times
+native_yr_vcov <- vcov(soil_full_rural_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+native_yr_vcov
+# calculate all the variances for all the years i.e. var(x+y); should be 19 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 18 cols for 18 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+soil_decline_rural <- data.frame()
+soil_decline_rural[1,1] <- summary(soil_full_rural_interx)$coefficients[2,1]
+soil_decline_rural[1,2] <- summary(soil_full_rural_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+soil_decline_rural[1,3] <- summary(soil_full_rural_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  soil_decline_rural[i,1] <- summary(soil_full_rural_interx)$coefficients[2,1]+
+    summary(soil_full_rural_interx)$coefficients[yr_ct,1]
+  
+  soil_decline_rural[i,2] <- summary(soil_full_rural_interx)$coefficients[2,1]+
+    summary(soil_full_rural_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  soil_decline_rural[i,3] <- summary(soil_full_rural_interx)$coefficients[2,1]+
+    summary(soil_full_rural_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+soil_decline_rural
+
+colnames(soil_decline_rural) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+soil_decline_rural$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+soil_rural_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = soil_decline_rural,
+            aes(x=year, y = estimate)) +
+  geom_line(data=soil_decline_rural,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=soil_decline_rural,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in Mineral Dust (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+soil_rural_interx_plot
+
+soil_decline_rural
+ggsave("../figures/effectmod_plots/sensitivity/rural/soil_rural.png", width = 6, height = 4, dpi = 300)
+
+```
+
+```{r urban soil lmer}
+# full adj model
+soil_full_urban = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    (1|State/County),
+                  data = urban_soil_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(soil_full_urban)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(soil_full_urban)$coefficients[2,1] - 1.96*summary(soil_full_urban)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(soil_full_urban)$coefficients[2,1] + 1.96*summary(soil_full_urban)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+paste(summary(soil_full_urban)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(soil_full_urban)$coefficients[2,1] - 1.96*summary(soil_full_urban)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(soil_full_urban)$coefficients[2,1] + 1.96*summary(soil_full_urban)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+soil_full_urban_interx = lmer(soil ~ county_type + as.factor(year) + 
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = urban_soil_ai_join, REML=FALSE)
+summary(soil_full_urban_interx)
+```
+
+```{r urban soil interX plot from lmer}
+# create vcov matrix of main effects and interX
+
+# 8/17/20 edit: first define variable for model function to avoid rerunning it a million times
+native_yr_vcov <- vcov(soil_full_urban_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+native_yr_vcov
+# calculate all the variances for all the years i.e. var(x+y); should be 19 total entries
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 18 cols for 18 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+soil_decline_urban <- data.frame()
+soil_decline_urban[1,1] <- summary(soil_full_urban_interx)$coefficients[2,1]
+soil_decline_urban[1,2] <- summary(soil_full_urban_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+soil_decline_urban[1,3] <- summary(soil_full_urban_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  soil_decline_urban[i,1] <- summary(soil_full_urban_interx)$coefficients[2,1]+
+    summary(soil_full_urban_interx)$coefficients[yr_ct,1]
+  
+  soil_decline_urban[i,2] <- summary(soil_full_urban_interx)$coefficients[2,1]+
+    summary(soil_full_urban_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  soil_decline_urban[i,3] <- summary(soil_full_urban_interx)$coefficients[2,1]+
+    summary(soil_full_urban_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+soil_decline_urban
+
+colnames(soil_decline_urban) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+soil_decline_urban$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+soil_urban_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = soil_decline_urban,
+            aes(x=year, y = estimate)) +
+  geom_line(data=soil_decline_urban,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=soil_decline_urban,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in Mineral Dust (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+soil_urban_interx_plot
+
+soil_decline_urban
+ggsave("../figures/effectmod_plots/sensitivity/rural/soil_urban.png", width = 6, height = 4, dpi = 300)
+
+```
+
+
+# Investigating relative contribution of components by rural status
+The graphs below compare the relative % distributions of the mean PM component concentrations (2000-2017) to total PM2.5 across all the study counties in the East vs. West in histogram format.
+
+Note: These are density plots that show # counties on the y-axis and concentration on the x-axis. 
+
+```{r read in total PM data and filter out 2018}
+totalPM_allyrs = read_csv("../data/county_concentrations/total_pm/model_PM25_allyrs.csv")
+
+## filter total pm in rural counties  only, drop 2018
+totalPM_allyrs_rural = totalPM_allyrs %>% 
+  filter(land_use >= 5) %>% 
+  filter(!year == 2018) %>% 
+  rename(total_pm = annual_mean_all)
+
+## filter total pm in nonrural/urban counties only, drop 2018
+totalPM_allyrs_urban = totalPM_allyrs %>% 
+  filter(land_use <= 4) %>% 
+  filter(!year == 2018) %>% 
+  rename(total_pm = annual_mean_all)
+```
+
+#### SO4 
+Conclusion: Similar distributions of SO4 in rural vs. nonrural/urban counties, slightly higher mean and median concentrations in nonrural/urban.
+```{r plot histogram}
+## Reminder: we filtered above SO4 data in rural and urban counties for comparison
+rural_so4_ai_join 
+urban_so4_ai_join 
+
+## Rural: join total pm column to rural so4 table
+so4_prop_rural = rural_so4_ai_join %>% 
+  left_join(totalPM_allyrs_rural) %>% 
+  mutate(so4_prop = so4/total_pm) %>% 
+  mutate(strata = "rural") # ID for strata to join two dfs into one for histogram
+so4_prop_rural
+
+## Nonrural: join total pm column to nonrural/urban so4 table
+so4_prop_urban = urban_so4_ai_join %>% 
+  left_join(totalPM_allyrs_urban) %>% 
+  mutate(so4_prop = so4/total_pm) %>% 
+  mutate(strata = "urban")
+so4_prop_urban
+
+so4_prop = rbind(so4_prop_rural, so4_prop_urban)
+so4_prop
+so4_prop_rural
+so4_prop_urban
+# df with group-weighted means to plot vertical dashed line in histogram
+library(plyr)
+so4_mu <- ddply(so4_prop, "strata", summarise, grp.mean=mean(so4_prop))
+so4_mu
+
+# Plot histograms
+ggplot(so4_prop, 
+       aes(x = so4_prop, color = strata)) +
+         geom_histogram(fill = "white") +
+  geom_vline(data=so4_mu, aes(xintercept=grp.mean, color=strata),
+             linetype="dashed") + theme_minimal()
+
+# ggsave("../figures/descriptive_graphs/pm_contributions/so4_prop.png")
+```
+
+
+```{r create relative contribution table w IQRs}
+summary(so4_prop_rural$so4_prop)
+summary(so4_prop_urban$so4_prop)
+
+## By AI-pop county type
+
+# Rural AI counties
+so4_prop_rural %>% 
+  filter(county_type == 1) %>% 
+  pull(so4_prop) %>% 
+  summary()
+
+# Rural nonAI counties
+so4_prop_rural %>% 
+  filter(county_type == 0) %>% 
+  pull(so4_prop) %>% 
+  summary()
+
+# Nonrural AI counties
+so4_prop_urban %>% 
+  filter(county_type == 1) %>% 
+  pull(so4_prop) %>% 
+  summary()
+
+# Nonrural nonAI counties
+so4_prop_urban %>% 
+  filter(county_type == 0) %>% 
+  pull(so4_prop) %>% 
+  summary()
+```
+
+
+#### NH4 
+Conclusion: Similar distribution and median NH4 concentrations in rural vs. nonrural counties.
+```{r plot histogram}
+## Reminder: we filtered above nh4 data in rural and urban counties for comparison
+rural_nh4_ai_join 
+urban_nh4_ai_join 
+
+## Rural: join total pm column to rural nh4 table
+nh4_prop_rural = rural_nh4_ai_join %>% 
+  left_join(totalPM_allyrs_rural) %>% 
+  mutate(nh4_prop = nh4/total_pm) %>% 
+  mutate(strata = "rural") # ID for strata to join two dfs into one for histogram
+
+## 5/2/2023: Error dropping total PM of all years of County FIPS 48123
+totalPM_allyrs_rural %>% 
+  filter(County == 48123,
+         year == 2000) 
+
+rural_nh4_ai_join %>% 
+  filter(County == 48123,
+         year == 2000) 
+
+rural_nh4_ai_join %>% 
+  left_join(totalPM_allyrs_rural,
+            by= c("County", "year", 'county_type', 'total_pop', 
+                  'pop_density', 'housing_density', 'hh_income', 
+                  'land_use', 'State', 'EPA_region', 'native_prop', 
+                  'Climate_Zone', 'popd_q', 'hhinc_q'))%>% 
+  filter(County == 48123,
+         year == 2000) 
+  
+nh4_prop_rural
+which(is.na(rural_nh4_ai_join %>% 
+  left_join(totalPM_allyrs_rural)), arr.ind=TRUE)
+
+## West: join total pm column to west nh4 table
+nh4_prop_urban = urban_nh4_ai_join %>% 
+  left_join(totalPM_allyrs_urban) %>% 
+  mutate(nh4_prop = nh4/total_pm) %>% 
+  mutate(strata = "urban")
+nh4_prop_urban
+
+nh4_prop = rbind(nh4_prop_rural, nh4_prop_urban)
+nh4_prop
+nh4_prop_rural
+nh4_prop_urban
+# df with group-weighted means to plot vertical dashed line in histogram
+library(plyr)
+nh4_mu <- ddply(nh4_prop, "strata", summarise, grp.mean=mean(nh4_prop))
+nh4_mu
+
+# Plot histograms
+ggplot(nh4_prop, 
+       aes(x = nh4_prop, color = strata)) +
+         geom_histogram(fill = "white") +
+  geom_vline(data=nh4_mu, aes(xintercept=grp.mean, color=strata),
+             linetype="dashed") + theme_minimal()
+
+# ggsave("../figures/descriptive_graphs/pm_contributions/nh4_prop.png")
+```
+
+
+```{r create relative contribution table w IQRs}
+summary(nh4_prop_rural$nh4_prop)
+summary(nh4_prop_urban$nh4_prop)
+
+## By AI-pop county type
+
+# Rural AI counties
+nh4_prop_rural %>% 
+  filter(county_type == 1) %>% 
+  pull(nh4_prop) %>% 
+  summary()
+
+# Rural nonAI counties
+nh4_prop_rural %>% 
+  filter(county_type == 0) %>% 
+  pull(nh4_prop) %>% 
+  summary()
+
+# Nonrural AI counties
+nh4_prop_urban %>% 
+  filter(county_type == 1) %>% 
+  pull(nh4_prop) %>% 
+  summary()
+
+# Nonrural nonAI counties
+nh4_prop_urban %>% 
+  filter(county_type == 0) %>% 
+  pull(nh4_prop) %>% 
+  summary()
+```
+
+#### NO3 
+Conclusion: Similar distribution and median NO3 concentrations in rural vs. nonrural counties.
+```{r plot histogram}
+## Reminder: we filtered above no3 data in rural and urban counties for comparison
+rural_no3_ai_join 
+urban_no3_ai_join 
+
+## Rural: join total pm column to rural no3 table
+no3_prop_rural = rural_no3_ai_join %>% 
+  left_join(totalPM_allyrs_rural) %>% 
+  mutate(no3_prop = no3/total_pm) %>% 
+  mutate(strata = "rural") # ID for strata to join two dfs into one for histogram
+no3_prop_rural
+
+## West: join total pm column to west no3 table
+no3_prop_urban = urban_no3_ai_join %>% 
+  left_join(totalPM_allyrs_urban) %>% 
+  mutate(no3_prop = no3/total_pm) %>% 
+  mutate(strata = "urban")
+no3_prop_urban
+
+no3_prop = rbind(no3_prop_rural, no3_prop_urban)
+no3_prop
+no3_prop_rural
+no3_prop_urban
+# df with group-weighted means to plot vertical dashed line in histogram
+library(plyr)
+no3_mu <- ddply(no3_prop, "strata", summarise, grp.mean=mean(no3_prop))
+no3_mu
+
+# Plot histograms
+ggplot(no3_prop, 
+       aes(x = no3_prop, color = strata)) +
+         geom_histogram(fill = "white") +
+  geom_vline(data=no3_mu, aes(xintercept=grp.mean, color=strata),
+             linetype="dashed") + theme_minimal()
+
+# ggsave("../figures/descriptive_graphs/pm_contributions/no3_prop.png")
+```
+
+
+```{r create relative contribution table w IQRs}
+summary(no3_prop_rural$no3_prop)
+summary(no3_prop_urban$no3_prop)
+
+# Rural AI counties
+no3_prop_rural %>% 
+  filter(county_type == 1) %>% 
+  pull(no3_prop) %>% 
+  quantile(c(0.25, 0.5, 0.75)) %>% 
+  round(3)
+
+# Rural nonAI counties
+no3_prop_rural %>% 
+  filter(county_type == 0) %>% 
+  pull(no3_prop) %>% 
+  quantile(c(0.25, 0.5, 0.75)) %>% 
+  round(3)
+
+# Nonrural AI counties
+no3_prop_urban %>% 
+  filter(county_type == 1) %>% 
+  pull(no3_prop) %>% 
+  quantile(c(0.25, 0.5, 0.75)) %>% 
+  round(3)
+
+# Nonrural nonAI counties
+no3_prop_urban %>% 
+  filter(county_type == 0) %>% 
+  pull(no3_prop) %>% 
+  quantile(c(0.25, 0.5, 0.75)) %>% 
+  round(3)
+```
+
+#### BC 
+Conclusion: Similar distributions of bc in rural vs. nonrural/urban counties, slightly higher mean and median concentrations in nonrural/urban
+```{r plot histogram}
+## Reminder: we filtered above bc data in rural and urban counties for comparison
+rural_bc_ai_join 
+urban_bc_ai_join 
+
+## Rural: join total pm column to rural bc table
+bc_prop_rural = rural_bc_ai_join %>% 
+  left_join(totalPM_allyrs_rural) %>% 
+  mutate(bc_prop = bc/total_pm) %>% 
+  mutate(strata = "rural") # ID for strata to join two dfs into one for histogram
+bc_prop_rural
+
+## West: join total pm column to west bc table
+bc_prop_urban = urban_bc_ai_join %>% 
+  left_join(totalPM_allyrs_urban) %>% 
+  mutate(bc_prop = bc/total_pm) %>% 
+  mutate(strata = "urban")
+bc_prop_urban
+
+bc_prop = rbind(bc_prop_rural, bc_prop_urban)
+bc_prop
+bc_prop_rural
+bc_prop_urban
+# df with group-weighted means to plot vertical dashed line in histogram
+library(plyr)
+bc_mu <- ddply(bc_prop, "strata", summarise, grp.mean=mean(bc_prop))
+bc_mu
+
+# Plot histograms
+ggplot(bc_prop, 
+       aes(x = bc_prop, color = strata)) +
+         geom_histogram(fill = "white") +
+  geom_vline(data=bc_mu, aes(xintercept=grp.mean, color=strata),
+             linetype="dashed") + theme_minimal()
+
+# ggsave("../figures/descriptive_graphs/pm_contributions/bc_prop.png")
+```
+
+
+```{r create relative contribution table w IQRs}
+summary(bc_prop_rural$bc_prop)
+summary(bc_prop_urban$bc_prop)
+
+# Rural AI counties
+bc_prop_rural %>% 
+  filter(county_type == 1) %>% 
+  pull(bc_prop) %>% 
+  quantile(c(0.25, 0.5, 0.75)) %>% 
+  round(3)
+
+# Rural nonAI counties
+bc_prop_rural %>% 
+  filter(county_type == 0) %>% 
+  pull(bc_prop) %>% 
+  quantile(c(0.25, 0.5, 0.75)) %>% 
+  round(3)
+
+# Nonrural AI counties
+bc_prop_urban %>% 
+  filter(county_type == 1) %>% 
+  pull(bc_prop) %>% 
+  quantile(c(0.25, 0.5, 0.75)) %>% 
+  round(3)
+
+# Nonrural nonAI counties
+bc_prop_urban %>% 
+  filter(county_type == 0) %>% 
+  pull(bc_prop) %>% 
+  quantile(c(0.25, 0.5, 0.75)) %>% 
+  round(3)
+```
+
+#### OM
+Conclusion: Very similar distributions and median/mean of om in rural vs. nonrural/urban counties.
+```{r plot histogram}
+## Reminder: we filtered above om data in rural and urban counties for comparison
+rural_om_ai_join 
+urban_om_ai_join 
+
+## Rural: join total pm column to rural om table
+om_prop_rural = rural_om_ai_join %>% 
+  left_join(totalPM_allyrs_rural) %>% 
+  mutate(om_prop = om/total_pm) %>% 
+  mutate(strata = "rural") # ID for strata to join two dfs into one for histogram
+om_prop_rural
+
+## West: join total pm column to west om table
+om_prop_urban = urban_om_ai_join %>% 
+  left_join(totalPM_allyrs_urban) %>% 
+  mutate(om_prop = om/total_pm) %>% 
+  mutate(strata = "urban")
+om_prop_urban
+
+om_prop = rbind(om_prop_rural, om_prop_urban)
+om_prop
+om_prop_rural
+om_prop_urban
+# df with group-weighted means to plot vertical dashed line in histogram
+library(plyr)
+om_mu <- ddply(om_prop, "strata", summarise, grp.mean=mean(om_prop))
+om_mu
+
+# Plot histograms
+ggplot(om_prop, 
+       aes(x = om_prop, color = strata)) +
+         geom_histogram(fill = "white") +
+  geom_vline(data=om_mu, aes(xintercept=grp.mean, color=strata),
+             linetype="dashed") + theme_minimal()
+
+# ggsave("../figures/descriptive_graphs/pm_contributions/om_prop.png")
+```
+
+
+```{r create relative contribution table w IQRs}
+summary(om_prop_rural$om_prop)
+summary(om_prop_urban$om_prop)
+
+# Rural AI counties
+om_prop_rural %>% 
+  filter(county_type == 1) %>% 
+  pull(om_prop) %>% 
+  quantile(c(0.25, 0.5, 0.75)) %>% 
+  round(3)
+
+# Rural nonAI counties
+om_prop_rural %>% 
+  filter(county_type == 0) %>% 
+  pull(om_prop) %>% 
+  quantile(c(0.25, 0.5, 0.75)) %>% 
+  round(3)
+
+# Nonrural AI counties
+om_prop_urban %>% 
+  filter(county_type == 1) %>% 
+  pull(om_prop) %>% 
+  quantile(c(0.25, 0.5, 0.75)) %>% 
+  round(3)
+
+# Nonrural nonAI counties
+om_prop_urban %>% 
+  filter(county_type == 0) %>% 
+  pull(om_prop) %>% 
+  quantile(c(0.25, 0.5, 0.75)) %>% 
+  round(3)
+```
+
+#### Dust/Soil 
+Conclusion: Similar distributions of soil in rural vs. nonrural/urban counties, slightly higher mean and median concentrations in nonrural/urban.
+```{r plot histogram}
+## Reminder: we filtered above soil data in rural and urban counties for comparison
+rural_soil_ai_join 
+urban_soil_ai_join 
+
+## Rural: join total pm column to rural soil table
+soil_prop_rural = rural_soil_ai_join %>% 
+  left_join(totalPM_allyrs_rural) %>% 
+  mutate(soil_prop = soil/total_pm) %>% 
+  mutate(strata = "rural") # ID for strata to join two dfs into one for histogram
+soil_prop_rural
+
+## West: join total pm column to west soil table
+soil_prop_urban = urban_soil_ai_join %>% 
+  left_join(totalPM_allyrs_urban) %>% 
+  mutate(soil_prop = soil/total_pm) %>% 
+  mutate(strata = "urban")
+soil_prop_urban
+
+soil_prop = rbind(soil_prop_rural, soil_prop_urban)
+soil_prop
+soil_prop_rural
+soil_prop_urban
+# df with group-weighted means to plot vertical dashed line in histogram
+library(plyr)
+soil_mu <- ddply(soil_prop, "strata", summarise, grp.mean=mean(soil_prop))
+soil_mu
+
+# Plot histograms
+ggplot(soil_prop, 
+       aes(x = soil_prop, color = strata)) +
+         geom_histogram(fill = "white") +
+  geom_vline(data=soil_mu, aes(xintercept=grp.mean, color=strata),
+             linetype="dashed") + theme_minimal()
+
+# ggsave("../figures/descriptive_graphs/pm_contributions/soil_prop.png")
+```
+
+
+```{r create relative contribution table w IQRs}
+summary(soil_prop_rural$soil_prop)
+summary(soil_prop_urban$soil_prop)
+
+# Rural AI counties
+soil_prop_rural %>% 
+  filter(county_type == 1) %>% 
+  pull(soil_prop) %>% 
+  quantile(c(0.25, 0.5, 0.75), na.rm = T) %>% 
+  round(3)
+
+# Rural nonAI counties
+soil_prop_rural %>% 
+  filter(county_type == 0) %>% 
+  pull(soil_prop) %>% 
+  quantile(c(0.25, 0.5, 0.75), na.rm = T) %>% 
+  round(3)
+
+# Nonrural AI counties
+soil_prop_urban %>% 
+  filter(county_type == 1) %>% 
+  pull(soil_prop) %>% 
+  quantile(c(0.25, 0.5, 0.75), na.rm = T) %>% 
+  round(3)
+
+# Nonrural nonAI counties
+soil_prop_urban %>% 
+  filter(county_type == 0) %>% 
+  pull(soil_prop) %>% 
+  quantile(c(0.25, 0.5, 0.75), na.rm = T) %>% 
+  round(3)
+```
