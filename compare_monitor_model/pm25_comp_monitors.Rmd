@@ -1,0 +1,486 @@
+---
+title: "PM2.5 speciated monitoring"
+author: "Maggie Li (ml4424)"
+date: "8/2/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(sf)
+library(rgdal)
+```
+
+daily_SPEC_2012.csv file was downloaded from EPA: https://aqs.epa.gov/aqsweb/airdata/download_files.html
+```{r read in monitor 2012 data}
+pm2.5_comp_monitors_2012_full = read_csv('daily_SPEC_2012.csv') %>% 
+  janitor::clean_names() 
+
+
+unique(pm2.5_comp_monitors_2012_full$parameter_name)
+
+pm2.5_comp_monitors_2012_full
+```
+
+
+```{r}
+# filter by all PM components
+unique(pm2.5_comp_monitors_2012_full$parameter_name)
+
+# pm2.5_comp_monitors_2012_full %>% 
+#   filter(grepl('PM2.5', parameter_name))
+
+# # only filter by PM2.5 components
+pm2.5_comp_monitors_2012_full = pm2.5_comp_monitors_2012_full %>%
+  filter(grepl('LC', parameter_name))
+
+# filter only sulfate
+sulfate_monitors_2012_full = pm2.5_comp_monitors_2012_full %>% 
+  filter(grepl('Sulfate PM2.5 LC', parameter_name))
+
+# new column for unique ID by latlon
+pm2.5_comp_monitors_2012_full = pm2.5_comp_monitors_2012_full %>% 
+  mutate(latlon = paste(latitude, longitude))
+length(unique(pm2.5_comp_monitors_2012_full$latlon))
+
+sulfate_monitors_2012_full = sulfate_monitors_2012_full %>% 
+  mutate(latlon = paste(latitude, longitude))
+length(unique(sulfate_monitors_2012_full$latlon))
+
+# create unique ID variable for latlon
+pm2.5_comp_monitors_2012_full = pm2.5_comp_monitors_2012_full %>%
+ group_by(latlon) %>%
+ mutate(monitor_id = cur_group_id())
+
+sulfate_monitors_2012_full = sulfate_monitors_2012_full %>%
+ group_by(latlon) %>%
+ mutate(monitor_id = cur_group_id())
+
+# get one row per monitor (unique latlon) using slice_head to pull one daily estimate per unique latlon
+pm2.5_comp_monitors_2012 = pm2.5_comp_monitors_2012_full %>% 
+  group_by(latlon) %>% 
+  slice_head() 
+
+sulfate_monitors_2012  = sulfate_monitors_2012_full  %>% 
+  group_by(latlon) %>% 
+  slice_head() 
+
+sulfate_monitors_2012$monitor_id
+```
+
+```{r convert df to sf}
+pm2.5_comp_monitors_2012_sf = pm2.5_comp_monitors_2012 %>% 
+  st_as_sf(coords = c("longitude", 'latitude'),
+           crs = 4269)
+pm2.5_comp_monitors_2012_sf
+
+sulfate_monitors_2012_sf = sulfate_monitors_2012 %>% 
+  st_as_sf(coords = c("longitude", 'latitude'),
+           crs = 4269)
+sulfate_monitors_2012_sf
+pm2.5_comp_monitors_2012_sf
+```
+### Get df for all counties and AI/non-AI classification (class_map_df)
+
+```{r}
+# # map all native counties; to get sense of location to compare to monitor coverage
+
+
+# # read in counties by different classifications from 2_define_vars.Rmd
+# census = read_csv("../data/ai_classifications/census.csv")
+# cluster = read_csv("../data/ai_classifications/cluster.csv")
+# reservation = read_csv("../data/ai_classifications/reservation.csv")
+# 
+# all_native_counties <- rbind(census, reservation, cluster)
+# 
+# # only keep unique values, because classification definitions overlap
+# all_native_counties <- unique(all_native_counties)
+# 
+# # Get list of all US counties from census
+# library(tidycensus)
+# total_pop <- "P001001"
+# all_counties = get_decennial(geography = "county",
+#                                variables = total_pop,
+#                                year = 2010)
+# 
+# all_counties$State <- substr(all_counties$GEOID, 0, 2)
+# all_counties$State <- as.numeric(all_counties$State)
+# all_counties <- all_counties %>%
+#   filter(State <= 56,
+#          State != 2,
+#          State != 15) #filter out HI, AL, US territories
+# 
+# # County list of all non-native counties
+# all_counties_list <- all_counties %>% dplyr::select(GEOID) %>%
+#   dplyr::rename(County = GEOID) #cleaned all_counties df to use in anti_join
+# all_general_counties <- anti_join(x = all_counties_list,
+#                                   y = all_native_counties,
+#                                   by= "County") %>%
+#   filter(!str_detect(County, "^02"),
+#          !str_detect(County, "^15"))
+# 
+# all_native_counties$county_type <- 1
+# all_general_counties$county_type <- 0
+# 
+# # need to filter out FIPS 46113, because it is a repeat of FIPS 46113 (Shannon County, SD was renamed Oglala Lakota County in 2015)
+# all_native_counties <- all_native_counties %>%
+#   filter(!County == "46113")
+# 
+# #census
+# census_counties <- census %>%
+#   mutate(County = str_replace(County, "46113", "46102")) %>%
+#   dplyr::rename(GEOID = County)
+# census_counties$State <- substr(census_counties$GEOID, 0, 2)
+# census_counties$State <- as.numeric(census_counties$State)
+# census_counties <- census_counties %>% filter(State <= 56,
+#                                               State != 2,
+#                                               State != 15)
+# census_counties
+# census_shp <- merge(counties, census_counties, by = 'GEOID', all = FALSE, duplicateGeoms = TRUE)
+# length(census_counties$GEOID)
+# length(census_shp$GEOID)
+# 
+# #cluster
+# cluster_counties <- cluster %>%
+#   mutate(County = str_replace(County, "46113", "46102")) %>%
+#   dplyr::rename(GEOID = County)
+# cluster_counties$State <- substr(cluster_counties$GEOID, 0, 2)
+# cluster_counties$State <- as.numeric(as.character(cluster_counties$State))
+# cluster_counties <- cluster_counties %>% filter(State <= 56,
+#                                               State != 2,
+#                                               State != 15)
+# cluster_counties
+# cluster_shp <- merge(counties, cluster_counties, by = 'GEOID',
+#                      all = FALSE, duplicateGeoms = TRUE)
+# summary(cluster_shp)
+# length(cluster_counties$GEOID)
+# length(cluster_shp$GEOID)
+# 
+# #reservation
+# reservation_counties <- reservation %>%
+#   mutate(County = str_replace(County, "46113", "46102")) %>%
+#   dplyr::rename(GEOID = County)
+# reservation_counties$State <- substr(reservation_counties$GEOID, 0, 2)
+# reservation_counties$State <- as.numeric(reservation_counties$State)
+# reservation_counties <- reservation_counties %>%
+#   filter(State <= 56,
+#          State != 2,
+#          State != 15)
+# unique(reservation_counties$GEOID)
+# reservation_shp <- merge(counties, reservation_counties, by = 'GEOID',
+#                  all = FALSE, duplicateGeoms = TRUE)
+# length(reservation_counties$GEOID)
+# length(reservation_shp$GEOID)
+```
+
+```{r}
+# # Non-restricted for each definition (main analysis)
+# census_counties <- census_counties %>%
+#   dplyr::select(GEOID)
+# cluster_counties <- cluster_counties %>%
+#   dplyr::select(GEOID)
+# reservation_counties <- reservation_counties %>%
+#   dplyr::select(GEOID)
+# 
+# #three-way overlap
+# all_overlap <- cluster_counties %>%
+#   inner_join(census_counties) %>%
+#   inner_join(reservation_counties) %>%
+#   mutate(county_type = "all_class")
+# all_overlap
+# nrow(all_overlap) #number of counties that fit all three definitions
+# 
+# #two-way overlap
+# cluster_census <- cluster_counties %>%
+#   inner_join(census_counties) %>%
+#   anti_join(all_overlap) %>%
+#   mutate(county_type = "cluster_census")
+# nrow(cluster_census)
+# 
+# cluster_reservation <- cluster_counties %>%
+#   inner_join(reservation_counties) %>%
+#   anti_join(all_overlap) %>%
+#   mutate(county_type = "cluster_reservation")
+# nrow(cluster_reservation)
+# 
+# census_reservation <- census_counties %>%
+#   inner_join(reservation_counties) %>%
+#   anti_join(all_overlap) %>%
+#   mutate(county_type = "census_reservation")
+# nrow(census_reservation)
+# 
+# #exclusive to each definition
+# census_only <- census_counties %>%
+#   anti_join(census_reservation) %>%
+#   anti_join(cluster_census) %>%
+#   anti_join(all_overlap) %>%
+#   mutate(county_type = "census_only")
+# nrow(census_only)
+# 
+# # cluster_only <- cluster_counties %>%
+# #   anti_join(cluster_census) %>%
+# #   anti_join(cluster_reservation) %>%
+# #   anti_join(all_overlap)
+# # nrow(cluster_only) ##NO COUNTIES
+# 
+# reservation_only <- reservation_counties %>%
+#   anti_join(cluster_reservation) %>%
+#   anti_join(census_reservation) %>%
+#   anti_join(all_overlap) %>%
+#   mutate(county_type = "reservation_only")
+# nrow(reservation_only)
+# 
+# ## combine all AI classifications into one df
+# ai_class_map_df = rbind(census_only,
+#       reservation_only,
+#       census_reservation,
+#       cluster_census,
+#       all_overlap) %>%
+#   mutate(county_type = factor(county_type,
+#                               levels= c("census_only", "reservation_only",
+#                                         "census_reservation", "cluster_census",
+#                                         "all_class"))) %>%
+#   mutate(GEOID = str_replace(GEOID, "46102", "46113")) # to match with mapping
+# 
+# ai_class_map_df
+# ## don't need to run below, because we are just mapping AI-populated counties on top of a blank counties basemap below
+# 
+# ## pull non-AI counties from 2_define_vars.Rmd
+# nai_class_map_df = all_general_counties %>%
+#   mutate(county_type = case_when(
+#     county_type == 0 ~ "non-AI")) %>%
+#   rename(GEOID = County)
+# 
+# ## join all AI and non-AI classified counties into one df
+# class_map_df = rbind(ai_class_map_df,
+#                      nai_class_map_df)
+# class_map_df
+# 
+# write_csv(class_map_df, "class_map_df.csv")
+```
+
+```{r get sf for AI and non-AI counties}
+counties <- st_read("../data/cb_2018_us_county_500k/cb_2018_us_county_500k.shp")
+summary(counties)
+class_map_df = read_csv("class_map_df.csv")
+ai_counties_sf = counties %>% 
+  inner_join(class_map_df) %>% 
+  filter(county_type != "non-AI")
+ai_counties_sf
+
+nonai_counties_sf = counties %>% 
+  inner_join(class_map_df) %>% 
+  filter(county_type == "non-AI")
+nonai_counties_sf
+st_drivers()
+```
+
+```{r point in polygon analysis to get # species monitors for all AI vs non-AI counties}
+# library(sp)
+# # pm2.5_comp_monitors_2012_sp = sf::as_Spatial(pm2.5_comp_monitors_2012_sf)
+# 
+# AI pop counties
+ai_pm_monitors_2012 = st_intersection(pm2.5_comp_monitors_2012_sf,
+     ai_counties_sf) 
+st_write(ai_pm_monitors_2012, "ai_pm_monitors_2012.shp")
+
+# non AI pop counties
+nonai_pm_monitors_2012 = st_intersection(pm2.5_comp_monitors_2012_sf,
+     nonai_counties_sf)
+st_write(nonai_pm_monitors_2012, "nonai_pm_monitors_2012.shp")
+unique(nonai_pm_monitors_2012$parameter_name)
+unique(ai_pm_monitors_2012$parameter_name)
+unique(pm2.5_comp_monitors_2012$parameter_name)
+```
+
+
+```{r point in polygon analysis to get # sulfate monitors for all AI vs non-AI counties}
+library(sp)
+# sulfate_monitors_2012_sp = sf::as_Spatial(sulfate_monitors_2012_sf)
+
+# AI pop counties
+ai_sulfate_monitors_2012 = st_intersection(sulfate_monitors_2012_sf,
+     ai_counties_sf)
+st_write(ai_sulfate_monitors_2012, "ai_sulfate_monitors_2012.shp")
+# st_intersection(ai_counties_sf,
+#                 sulfate_monitors_2012)
+
+# non AI pop counties
+nonai_sulfate_monitors_2012 = st_intersection(sulfate_monitors_2012_sf,
+     nonai_counties_sf)
+st_write(nonai_sulfate_monitors_2012, "nonai_sulfate_monitors_2012.shp")
+
+# st_intersection(nonai_counties_sf,
+#                 sulfate_monitors_2012)
+
+```
+
+
+```{r plot points}
+## make base map
+library(ggmap)
+library(mapdata)
+
+#name the built-in state dataset in map_data to 'states'
+states <- map_data("state")
+
+#name the built-in county dataset in mapdata to 'counties'
+counties <- map_data("county")
+
+#create key to have column with state abbreviation to join with our dataset
+state_key <- data.frame(state.name, state.abb) 
+names(state_key) <- c("region","state_abb")
+state_key = state_key %>% mutate(region = tolower(region),
+                                 state_abb = tolower(state_abb))
+print(state_key)
+
+#convert counties region column from full name to abbreviation and rename to region to match our dataset
+counties = counties %>% 
+  left_join(state_key) %>% 
+  dplyr::select(-region) %>% 
+  rename(region = state_abb) 
+counties
+
+#view(counties)
+
+# just states
+base <- ggplot(data = states, mapping = aes(x = long, y = lat, group = group)) +
+  coord_fixed(1.3) + geom_polygon(fill = "white")
+base
+
+# test map with counties and black border around states, not using this in paper
+base + geom_polygon(data = counties, fill = NA, color = "gray") + 
+  geom_polygon(color = "black", fill = NA)
+
+# add species monitor locations
+base + geom_polygon(data = counties, fill = NA, color = "gray") + 
+  geom_polygon(color = "black", fill = NA) +
+  geom_sf(data = ai_pm_monitors_2012,
+          aes(fill = "black"))
+
+```
+```
+
+### Correlation plot of monitor vs. modeled sulfate concentrations
+
+```{r get monitor IDs & county FIPS to pull all daily estimates from full dataset}
+ai_counties = class_map_df %>% 
+  filter(county_type != "non-AI")
+ai_counties
+
+nonai_counties = class_map_df %>% 
+  filter(county_type == "non-AI")
+nonai_counties
+
+ai_sulfate_monitor_ids = st_drop_geometry(ai_sulfate_monitors_2012) %>% 
+  select(monitor_id, GEOID)
+ai_sulfate_monitor_ids
+
+nonai_sulfate_monitor_ids = st_drop_geometry(nonai_sulfate_monitors_2012) %>% 
+  select(monitor_id, GEOID)
+nonai_sulfate_monitor_ids
+```
+
+```{r pull daily estimates for AI and nonAI populated counties}
+ai_sulfate_monitors_2012_full = sulfate_monitors_2012_full %>% 
+  filter(monitor_id %in% ai_sulfate_monitor_ids$monitor_id)
+
+nonai_sulfate_monitors_2012_full = sulfate_monitors_2012_full %>% 
+  filter(monitor_id %in% nonai_sulfate_monitor_ids$monitor_id)
+```
+
+```{r get annual estimates by monitor id}
+ai_sulfate_monitor_annual = ai_sulfate_monitors_2012_full %>% 
+  group_by(monitor_id) %>% 
+  summarize(monitor_so4 = mean(arithmetic_mean)) %>% 
+  left_join(ai_sulfate_monitor_ids) %>% # get county fips back in dataset
+  mutate(county_type = 1)
+
+nonai_sulfate_monitor_annual = nonai_sulfate_monitors_2012_full %>% 
+  group_by(monitor_id) %>% 
+  summarize(monitor_so4 = mean(arithmetic_mean)) %>% 
+  left_join(nonai_sulfate_monitor_ids) %>%  # get county fips back in dataset
+  mutate(county_type = 0)
+
+
+## join into one df
+all_sulfate_monitor_annual = rbind(ai_sulfate_monitor_annual,
+                                   nonai_sulfate_monitor_annual)
+
+# data check on one monitor 
+ai_sulfate_monitors_2012_full %>% 
+  filter(monitor_id == 71) %>% 
+  pull(arithmetic_mean) %>% 
+  mean()
+```
+
+```{r read in modeled data and join with monitor data}
+so4_allyrs = read_csv("../data/county_concentrations/allyrs/so4_allyrs.csv")
+
+all_county_types = rbind(ai_county_fips, nai_county_fips) %>% 
+  rename(FIPS = County)
+
+so4_ai_join_2012 = left_join(so4_allyrs, all_county_types) %>% 
+  dplyr::select(FIPS, so4, year, county_type) %>% 
+  rename(GEOID = FIPS) %>% 
+  mutate(county_type = replace_na(county_type, 1)) %>% ## county FIPS 46102 is showing up as an NA
+  filter(year == 2012)
+so4_ai_join_2012
+
+# join monitor and modeled data
+all_sulfate_monitor_model = all_sulfate_monitor_annual %>% 
+  left_join(so4_ai_join_2012) %>% 
+  rename(modeled_so4 = so4) %>% 
+  mutate(county_type = as.character(county_type))
+```
+```{r simple correlation plot for monitor vs modeled data}
+library(corrplot)
+M = cor(mtcars)
+corrplot(M, method = 'number') 
+
+modeled_data = all_sulfate_monitor_model$modeled_so4
+monitor_data = all_sulfate_monitor_model$monitor_so4
+
+# Creating the plot
+plot(modeled_data, monitor_data, pch = 19, col = all_sulfate_monitor_model$county_type)
+
+# Regression line
+abline(lm(monitor_data ~ modeled_data), col = "red", lwd = 3)
+
+# Pearson correlation
+text(paste("Correlation:", round(cor(modeled_data, monitor_data), 2)), x = 0.75, y = 2.5)
+
+
+### Do it using ggplot (not working)
+# ggplot(all_sulfate_monitor_model,aes(x=modeled_data,y=monitor_data,col=county_type)) + 
+#   geom_point() +
+#   geom_smooth(method = "lm",
+#               formula = monitor_data ~ modeled_data,
+#               geom = "smooth")
+
+## only AI pop counties
+ai_sulfate_monitor_model = all_sulfate_monitor_model %>% 
+  filter(county_type == "1")
+ai_sulfate_monitor_model
+
+# Creating the plot
+plot(ai_sulfate_monitor_model$modeled_so4, 
+     ai_sulfate_monitor_model$monitor_so4, pch = 19, 
+     col = ai_sulfate_monitor_model$county_type)
+
+# Regression line
+abline(lm(monitor_data ~ modeled_data), col = "red", lwd = 3)
+
+# Pearson correlation
+text(paste("Correlation:", round(cor(ai_sulfate_monitor_model$modeled_so4, ai_sulfate_monitor_model$monitor_so4), 2)), x = 0.75, y = 1.5)
+text(paste("N = 38"), x = 1.75, y = 0.5)
+```
+
+```{r}
+
+```
+
