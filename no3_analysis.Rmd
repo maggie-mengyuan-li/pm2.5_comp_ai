@@ -1,0 +1,920 @@
+---
+title: "NO3 Analysis"
+author: "Maggie Li (ml4424)"
+date: "9/28/2021"
+output: html_document
+---
+
+```{r load libraries}
+library(tidyverse)
+library(janitor)
+library(stats)
+library(lme4)
+library(raster)
+library(sf)
+library(usmap)
+library(tictoc)
+require(lmerTest)
+library(mgcViz)
+library(cowplot)
+options(scipen=4)
+library(data.table)
+```
+
+
+# Aim 1: Compare county-level NO3 concentrations in 2000-2017 between AI and non-AI-populated counties
+
+```{r Read in file with county type defined for each 3109 study counties}
+ai_county_fips = read_csv("data/ai_counties.csv") 
+
+nai_county_fips = read_csv("data/nai_counties.csv") 
+```
+
+## Extract county-level NO3 concentrations for 2000-2017
+
+Data Source: Randall Martin's PM2.5 Model https://sites.wustl.edu/acag/datasets/surface-pm2-5/ 
+Note: The raw data show the proportion of each component, so have to multiply it by the total PM concentration that year
+
+For Vivian: The next 2 code chunks will take a while to run, especially looping through all years. If it's too much, you can run just one year or a few; the outputted datasets are already in the folders indicated by write_csv.
+
+```{r Prepare by reading in county shapefiles and organizing by state}
+# read in all counties shapefile
+counties_shp <- "data/cb_2018_us_county_500k/cb_2018_us_county_500k.shp"
+all_counties <- st_read(counties_shp, stringsAsFactors = FALSE)
+
+# group all_counties by state fips, exclude territories and hawaii and alaska
+all_counties <- all_counties %>% arrange(STATEFP) %>%
+  filter(STATEFP != "02",
+         STATEFP != "15")
+unique(all_counties$STATEFP)
+all_counties
+
+# each state's fips code in a vector
+state_fips <- fips(state.name, county = c())
+
+# remove hawaii and alaska (FIPS are 15 and 02)
+state_fips <- state_fips[!(state_fips %in% c("02","15"))]
+
+# save each state's counties as separate sf's, in a list. the function below will iterate through all of these states.
+state_list <- list(length(state_fips)) # create list of length 48
+for (i in 1:length(state_fips)){
+  state_list[[i]] <- all_counties %>%
+    filter(STATEFP==state_fips[i])
+}
+# state_list # each list value = one state; includes polygon counties in that state; 48 states total
+```
+
+### Run loops to read in and get all NO3 data 2000-2017 in DC and 48 contiguous states
+
+```{r Create vectors of the file names to read in through loop}
+no3_years = c("no3_2000", "no3_2001", "no3_2002", "no3_2003", "no3_2004", "no3_2005",
+             "no3_2006", "no3_2007", "no3_2008", "no3_2009",
+             "no3_2010", "no3_2011", "no3_2012", "no3_2013",
+             "no3_2014", "no3_2015", "no3_2016", "no3_2017")
+
+pm_years = c("pm_2000", "pm_2001", "pm_2002", "pm_2003", "pm_2004", "pm_2005",
+             "pm_2006", "pm_2007", "pm_2008", "pm_2009",
+             "pm_2010", "pm_2011", "pm_2012", "pm_2013",
+             "pm_2014", "pm_2015", "pm_2016", "pm_2017")
+```
+
+```{r Extract Data for DC only}
+## Note: we have to extract concentrations in DC separately, because DC was not a state in the state_list sf file.
+## create a df just DC all years, join with the existing components_year_df files in data/county_concentrations
+DC_state_list <- all_counties %>%
+    filter(STATEFP== "11")
+
+# create empty list to save DC PM data into; (each list element is 1 df with one row, for the DC estimate that year.)
+no3_dc_list = list()
+
+# count variable for year to name saved out df
+year = 2000
+## Run loop for 2000 through 2017
+for (i in 1:18){
+  # read in ncdf for no3 data downloaded from Randall's website, convert to raster stack 
+  no3_year = raster(paste("data/raw_components/no3/", no3_years[i], ".nc", sep = ""))
+  no3_year = stack(no3_year)
+
+
+  # read in ncdf as raster stack for total PM
+  pm_year = raster(paste("data/raw_components/total_pm/", pm_years[i], ".nc", sep = ""))
+  pm_year = stack(pm_year)
+
+  # get the actual raster matrix for no3 through multiplying percentage with total PM
+  no3_actual_year = (no3_year*pm_year)/100
+  mean(getValues(no3_actual_year), na.rm = T) # average county mean
+
+# extract data for just DC (fips = 11)
+  no3_dc_list[[i]] <- raster::extract(no3_actual_year,
+                            DC_state_list,
+                            fun=mean, na.rm=TRUE, df=TRUE) %>% # specify function = mean to extract mean concentrations
+    mutate(year = year) %>%
+    dplyr::rename(FIPS = ID) %>%
+    dplyr::rename(no3 = layer) %>%
+    mutate(State = 11) %>%
+    mutate(FIPS = 11001)
+  no3_dc_list[[i]]$County <- "001"
+  year = year + 1
+
+
+}
+toc()
+no3_dc_list
+no3_dc = do.call(rbind, no3_dc_list)
+no3_dc # dataframe of concentrations in DC from 2000-2017
+
+tic()
+```
+
+```{r Extract Data for 48 contiguous states}
+# ## count variable for year to name saved out df
+# year = 2000
+# ## Run loop for 2000 through 2017
+# for (i in 1:18){
+#   # read in ncdf as raster stack for bcs
+#   no3_year = raster(paste("data/raw_components/no3/", no3_years[i], ".nc", sep = ""))
+#   no3_year = stack(no3_year)
+# 
+# 
+#   # read in ncdf as raster stack for total PM
+#   pm_year = raster(paste("data/raw_components/total_pm/", pm_years[i], ".nc", sep = ""))
+#   pm_year = stack(pm_year)
+# 
+#   # get the actual raster matrix for BC through multiplying percentage with total PM
+#   no3_actual_year = (no3_year*pm_year)/100
+#   mean(getValues(no3_actual_year), na.rm = T) # average county mean
+# 
+#   # create empty lists to save dfs into
+#   no3_year_list = list()
+# 
+#   # write loop to extract county BC levels for 2001: this will take a while to run
+# 
+#   tic() # tictoc helps record the time it takes to run things in R
+#   # Nested loop to extract data for all 48 states
+#   for (i in 1:48){ # 48 states total FIPS = 01 (AL), 04 (AZ), etc
+#     no3_year_list[[i]] <- raster::extract(no3_actual_year,
+#                                          state_list[[i]],
+#                                          fun=mean, na.rm=TRUE, df=TRUE) #specify function = mean to extract mean concentrations
+#     no3_year_list[[i]]$County <- state_list[[i]]$COUNTYFP
+#     no3_year_list[[i]]$State <- state_fips[i]
+#     no3_year_list[[i]]$FIPS <- paste(no3_year_list[[i]]$State,
+#                                     no3_year_list[[i]]$County)
+#     no3_year_list[[i]]$FIPS <- str_replace_all(no3_year_list[[i]]$FIPS, " ", "")
+#     } # end nested loop
+# 
+#   # PM25 for each county should be saved now in the previously empty list
+#   # (each list item = one state, each row = county within that state)
+#   no3_year_df = do.call(rbind, no3_year_list) # combine all list items into one df
+#   write_csv(no3_year_df,
+#             paste("data/county_concentrations/no3/no3_", year, "_df.csv", sep = ""))
+#   year = year + 1
+# 
+# }
+# toc()
+
+```
+
+```{r Combine all years into one df}
+# Read in model data into list of length 19 (# study years)
+no3_allyrs <- list()
+yr = 2000
+for (i in 1:18){
+  no3_allyrs[[i]] <- read_csv(file = paste('data/county_concentrations/no3/no3_',
+                                           yr, '_df.csv', sep = '')) %>%
+    dplyr::rename(no3 = layer) %>% # rename "layer" column to specify component (NO3)
+    mutate(year = yr) # add column for year
+  yr <- yr + 1
+}
+
+no3_allyrs = do.call(rbind, no3_allyrs) # join list into one df
+
+# Join 48 states with DC data
+no3_allyrs = no3_allyrs %>% dplyr::select(-ID)
+no3_allyrs = rbind(no3_allyrs, no3_dc)
+
+summary(no3_allyrs)
+length(unique(no3_allyrs$FIPS))
+
+# write out Final joined dataset w/ 48 states + DC
+write_csv(no3_allyrs, "data/county_concentrations/allyrs/no3_allyrs.csv")
+
+```
+
+## Assign NO3 estimates to AI vs non-AI counties
+
+```{r Join layer to AI county assignment}
+no3_allyrs = read_csv("data/county_concentrations/allyrs/no3_allyrs.csv")
+
+all_county_types = rbind(ai_county_fips, nai_county_fips) %>% 
+  rename(FIPS = County)
+
+no3_ai_join = left_join(no3_allyrs, all_county_types) %>% 
+  dplyr::select(FIPS, no3, year, county_type) %>% 
+  rename(County = FIPS) %>% 
+  mutate(county_type = replace_na(county_type, 1)) ## county FIPS 46102 is showing up as an NA due to the reassignment of FIPS from 46113 to 46102 in 2010
+no3_ai_join
+```
+
+```{r Join with covariates}
+covariates = read_csv("data/covariates.csv")
+summary(covariates)
+no3_ai_join = no3_ai_join %>% 
+  left_join(covariates)
+no3_ai_join
+
+# Compare summaries in all counties, AI, non-AI
+summary(no3_ai_join)
+summary(no3_ai_join %>% filter(county_type == 1))
+summary(no3_ai_join %>% filter(county_type == 0))
+
+# note higher median/mean levels in nAI counties (unadjusted)
+```
+
+```{r Add columns for deciles}
+# Split population density and hhincome into deciles for model
+no3_ai_join$popd_q <- cut(no3_ai_join$pop_density, quantile(no3_ai_join$pop_density, seq(0,1,0.1)), include.lowest = TRUE)
+no3_ai_join$hhinc_q <- cut(no3_ai_join$hh_income, quantile(no3_ai_join$hh_income, seq(0,1,0.1)), include.lowest = TRUE)
+sum(table(no3_ai_join$popd_q, exclude = NULL)) == dim(no3_ai_join)[1]
+no3_ai_join
+
+```
+
+```{r Boxplot of NO3 distribution by county type}
+boxplot(no3~county_type,data=no3_ai_join, main="NO3 by AI-pop county type",
+   xlab="County Type", ylab="NO3 (μg/m3)")
+```
+
+
+## Statistical Models:
+
+```{r Run lmer models}
+# set referent for df
+no3_ai_join = no3_ai_join %>% 
+  mutate(county_type = factor(county_type)) %>% 
+  mutate(county_type = relevel(county_type, ref="0"))
+
+## Save out dataframe to data folder
+write_csv(no3_ai_join,
+          "data/county_concentrations/joined_dta/no3_ai_join.csv")
+
+# unadjusted
+no3_unadj = lmer(no3 ~ county_type + as.factor(year) +
+                    (1|State/County),
+                  data = no3_ai_join)
+
+## 95% CI: point estimate, LL, UL
+summary(no3_unadj)$coefficients[2,1] %>% round(digits = 3)
+
+round(summary(no3_unadj)$coefficients[2,1] - 1.96*summary(no3_unadj)$coefficients[2,2], digits = 3)
+round(summary(no3_unadj)$coefficients[2,1] + 1.96*summary(no3_unadj)$coefficients[2,2], digits = 3)
+
+# additionally adjusted for popd
+no3_partial = lmer(no3 ~ county_type + as.factor(year) +
+                  popd_q +
+                  (1|State/County),
+                data = no3_ai_join)
+
+## 95% CI: point estimate, LL, UL
+summary(no3_partial)$coefficients[2,1] %>% round(digits = 3)
+
+round(summary(no3_partial)$coefficients[2,1] - 1.96*summary(no3_partial)$coefficients[2,2], digits = 3)
+round(summary(no3_partial)$coefficients[2,1] + 1.96*summary(no3_partial)$coefficients[2,2], digits = 3)
+
+# full adj model
+no3_full = lmer(no3 ~ county_type + as.factor(year) +
+                    popd_q + 
+                    hhinc_q +
+                    (1|State/County),
+                  data = no3_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+summary(no3_full)$coefficients[2,1] %>% round(digits = 3)
+
+round(summary(no3_full)$coefficients[2,1] - 1.96*summary(no3_full)$coefficients[2,2], digits = 3)
+round(summary(no3_full)$coefficients[2,1] + 1.96*summary(no3_full)$coefficients[2,2], digits = 3)
+
+paste(summary(no3_full)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(no3_full)$coefficients[2,1] - 1.96*summary(no3_full)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(no3_full)$coefficients[2,1] + 1.96*summary(no3_full)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+no3_full_interx = lmer(no3 ~ county_type +
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = no3_ai_join, REML=FALSE)
+summary(no3_full_interx)
+```
+
+```{r Save out results from main effects only model and interx effects model}
+
+## save model output for main effects only model
+saveRDS(no3_full,
+        file = "intermediate/model_outputs/main_results/no3_main_effects.rds")
+## save model output for main effects only model
+saveRDS(no3_full_interx,
+        file = "intermediate/model_outputs/main_results/no3_interx.rds")
+
+```
+
+```{r InterX plot from lmer}
+# create vcov matrix of main effects and interX
+
+# extract vcov matrix of the county type main effect and interaction effect for each categorical year
+native_yr_vcov <- vcov(no3_full_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+native_yr_vcov
+
+native_yr_vcov[1,1]
+native_yr_vcov[2,2]
+native_yr_vcov[2,1]
+
+native_yr_vcov[1,1]
+native_yr_vcov[3,3]
+native_yr_vcov[3,1]
+
+native_yr_vcov[1,1] + native_yr_vcov[2,2] + 2* native_yr_vcov[2,1]
+native_yr_vcov[1,1] + native_yr_vcov[3,3] + 2* native_yr_vcov[3,1]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 19 total entries --> var_vector
+# var_vector should be the same repeating value (from the diagonal of the vcov matrix above)
+
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+no3_decline <- data.frame()
+no3_decline[1,1] <- summary(no3_full_interx)$coefficients[2,1]
+no3_decline[1,2] <- summary(no3_full_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+no3_decline[1,3] <- summary(no3_full_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+summary(no3_full_interx)
+summary(no3_full_interx)$coefficients[38,1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  no3_decline[i,1] <- summary(no3_full_interx)$coefficients[2,1]+
+    summary(no3_full_interx)$coefficients[yr_ct,1]
+  
+  no3_decline[i,2] <- summary(no3_full_interx)$coefficients[2,1]+
+    summary(no3_full_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  no3_decline[i,3] <- summary(no3_full_interx)$coefficients[2,1]+
+    summary(no3_full_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+colnames(no3_decline) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+no3_decline$year <- seq(2000, 2017) # column for year
+```
+
+
+
+```{r Plot of total effect of AI county type over time}
+# updated 12/14/22 with slanted x-axis label
+no3_decline
+no3_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = no3_decline,
+            aes(x=year, y = estimate)) +
+  geom_line(data=no3_decline,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=no3_decline,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in ", "NO"[3]^"-", " (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank(),
+        panel.background = element_rect(fill='transparent'), 
+        plot.background = element_rect(fill='transparent', color=NA)) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+no3_interx_plot
+ggsave("figures/effectmod_plots/main/no3.png", width = 6, height = 4, dpi = 300,
+       bg='transparent')
+
+```
+
+## Smooth interX model with time
+
+To Vivian: Given similarities with the linear models, we did not choose to include them in our paper, opting instead for the GLMM results above. You can run the below code to check it out if you wish to.
+
+```{r 10 knots}
+# # using splines
+# library(splines)
+# library(mgcv)
+# library(gamm4)
+# no3_full_interx_smooth = gamm4(no3 ~ county_type +
+#                                  s(year, by = county_type, k = 10) + # specify k knots
+#                                  popd_q +
+#                                  hhinc_q,
+#                                random = ~(1|State/County),
+#                                data =  no3_ai_join)
+# summary(no3_full_interx_smooth)
+# summary(no3_full_interx_smooth$gam)
+# summary(no3_full_interx_smooth$mer)
+# 
+# plot(no3_full_interx_smooth$gam, pages = 1)
+# 
+# 
+# # empty df for predicted values from gam; decile of popd and hhinc correspond to most common quantile for non-AI pop counties 
+# pdat = expand.grid(year = seq(2000, 2017, length = 170),
+#                     county_type = c(0, 1),
+#                    popd_q = "(160,382]",
+#                    hhinc_q = "(4.45e+04,4.72e+04]")
+# 
+# # # add in predicted values from gam
+# # xp <- predict(no3_full_interx_smooth$gam, newdata = pdat, type = 'lpmatrix')
+# # xp
+# # 
+# # ## which cols of xp relate to splines of interest?
+# # c1 <- grepl('1', colnames(xp))
+# # c2 <- grepl('0', colnames(xp))
+# # ## which rows of xp relate to sites of interest?
+# # r1 <- with(pdat, county_type == '1')
+# # r2 <- with(pdat, county_type == '0')
+# # 
+# # ## difference rows of xp for data from comparison
+# # X <- xp[r1, ] - xp[r2, ]
+# # ## zero out cols of X related to splines for other lochs
+# # X[, ! (c1 | c2)] <- 0
+# # ## zero out the parametric cols
+# # X[, !grepl('^s\\(', colnames(xp))] <- 0
+# # #extract betas
+# # dif <- X %*% coef(no3_full_interx_smooth$gam)
+# # #extract se
+# # se <- sqrt(rowSums((X %*% vcov(no3_full_interx_smooth$gam)) * X))
+# # #calculate CI
+# # crit <- qt(.975, df.residual(no3_full_interx_smooth$gam))
+# # upr <- dif + (crit * se)
+# # lwr <- dif - (crit * se)
+# # 
+# # # function to do it all in 1
+# # smooth_diff <- function(model, newdata, f1, f2, var, alpha = 0.05,
+# #                         unconditional = FALSE) {
+# #     xp <- predict(model, newdata = newdata, type = 'lpmatrix')
+# #     c1 <- grepl(f1, colnames(xp))
+# #     c2 <- grepl(f2, colnames(xp))
+# #     r1 <- newdata[[var]] == f1
+# #     r2 <- newdata[[var]] == f2
+# #     ## difference rows of xp for data from comparison
+# #     X <- xp[r1, ] - xp[r2, ]
+# #     ## zero out cols of X related to splines for other lochs
+# #     X[, ! (c1 | c2)] <- 0
+# #     ## zero out the parametric cols
+# #     X[, !grepl('^s\\(', colnames(xp))] <- 0
+# #     dif <- X %*% coef(model)
+# #     se <- sqrt(rowSums((X %*% vcov(model, unconditional = unconditional)) * X))
+# #     crit <- qt(alpha/2, df.residual(model), lower.tail = FALSE)
+# #     upr <- dif + (crit * se)
+# #     lwr <- dif - (crit * se)
+# #     data.frame(pair = paste(f1, f2, sep = '-'),
+# #                diff = dif,
+# #                se = se,
+# #                upper = upr,
+# #                lower = lwr)
+# # }
+# # data.frame(pair = paste(1, 0, sep = '-'),
+# #                diff = dif,
+# #                se = se,
+# #                upper = upr,
+# #                lower = lwr)
+# # comp1 <- smooth_diff(no3_full_interx_smooth$gam, 
+# #                      newdata = pdat, 
+# #                      f1 = '1', 
+# #                      f2 = '0', 
+# #                      var = 'county_type')
+# # comp <- cbind(year = seq(2000, 2017, length = 170),
+# #               rbind(comp1))
+# # 
+# # comp
+# # 
+# # # plot smoothed difference
+# # # ggplot(comp, aes(x = year, y = diff, group = pair)) +
+# # #     geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+# # #     geom_line()
+# # 
+# # ggplot(comp, aes(x = year, y = diff, group = pair)) +
+# #     geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+# #     geom_line() +
+# #   labs(x = "Year",
+# #        y = expression(paste("Mean Difference in NO3 (", mu, "g/", m^3, ")")),
+# #        fill = "County Type") +
+# #   theme(plot.title = element_text(size = 18),
+# #         axis.title = element_text(size = 16),
+# #         axis.text = element_text(size = 12),
+# #         axis.title.x=element_blank()) +
+# #   scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+# #   guides(x =  guide_axis(angle = 45)) +
+# #   geom_hline(yintercept=0, linetype="solid", color = "red") +
+# #   theme_linedraw()
+# # ggsave("figures/effectmod_plots/no3/no3_smooth_k10.png", width = 6, height = 4, dpi = 300)
+# 
+# # Plot difference in splines by county type using add_predictions only
+# pdat %>%
+#   modelr::add_predictions(no3_full_interx_smooth$gam) %>%
+#   dcast(year ~ county_type, value.var = "pred", fill = 0) %>%
+#   mutate(diff = `1` - `0`) %>%
+#   ggplot(aes(x = year, y = diff)) +
+#            geom_line() + 
+#   ylim(-0.25, 0) +
+#   xlim(2000, 2017) +
+#   scale_x_continuous(n.breaks = 17) +
+#   geom_hline(yintercept=0, linetype="solid", color = "red") +
+#   theme_linedraw()
+# 
+# vcov(no3_full_interx_smooth$gam)
+# no3_full_interx_smooth$gam$Ve
+# 
+# # create vcov matrix of main effects and interX
+# 
+# # vcov matrix of county_type main effect and spline coefficients with year
+# vcov(no3_full_interx_smooth$gam)[c(2,seq(21,38)), c(2,seq(21,38))]
+# fixef(no3_full_interx_smooth$mer)
+# summary(no3_full_interx_smooth)
+# summary(no3_full_interx_smooth$gam)
+# summary(no3_full_interx_smooth$mer)
+# 
+# fixef(no3_full_interx_smooth$mer)  # extract coefficients from lmer fitted model
+# 
+# 
+# 
+# # # simpler method to plot difference in smooths
+# # no3_full_interx_smooth$gam1 <- getViz(no3_full_interx_smooth$gam)
+# # 
+# # plotDiff(s1 = sm(no3_full_interx_smooth$gam1, 2), 
+# #          s2 = sm(no3_full_interx_smooth$gam1, 1)) + l_ciPoly() + 
+# #          l_fitLine() + geom_hline(yintercept = 0, linetype = 2)
+# 
+# # compare with original glmm
+# # no3_interx_plot
+```
+
+### Getting variance of fitted values (Meeting with Jeff 4/26/22)
+http://www.stat.ucla.edu/~nchristo/introeconometrics/introecon_fitted.pdf 
+
+```{r}
+# ## MODEL MATRIX X (is an empty DF to predict on; use model.matrix fxn on pdat)
+# write_csv(no3_ai_join, "intermediate/cty_yr_dta/no3_ai_join.csv")
+# 
+# no3_full_interx_smooth = gamm4(no3 ~ county_type +
+#                                  s(year, by = county_type, k = 10) + # specify k knots
+#                                  popd_q +
+#                                  hhinc_q,
+#                                random = ~(1|State/County),
+#                                data =  no3_ai_join)
+# 
+# mmatrix_x = model.matrix(no3_full_interx_smooth$gam, data = pdat)
+# nrow(mmatrix_x)
+# ncol(mmatrix_x)
+# 
+# ## VCOV matrix of gam betas (predicted coefficients)
+# gam_vcov = vcov(no3_full_interx_smooth$gam)
+# 
+# ## transpose model matrix X
+# t_mmatrix_x = t(mmatrix_x)
+# 
+# nrow(t_mmatrix_x)
+# ncol(t_mmatrix_x)
+# 
+# ## variance-cov matrix of fitted values = var(y-hat) = X * var(β-hat) * X_transpose
+# mmatrix_vcov = mmatrix_x %*% vcov(no3_full_interx_smooth$gam) 
+# vcov_y_hat = mmatrix_vcov %*% t_mmatrix_x
+# 
+# # pull diagonal elements to extract variances from var-cov matrix of fitted value
+# var_y_hat = diag(vcov_y_hat)
+
+```
+
+
+```{r 7 knots}
+# # using splines
+# library(splines)
+# library(mgcv)
+# library(gamm4)
+# no3_full_interx_smooth = gamm4(no3 ~ county_type +
+#                                  s(year, by = county_type, k = 7) + # specify k knots
+#                                  popd_q + 
+#                                  hhinc_q,
+#                                random = ~(1|State/County),
+#                                data =  no3_ai_join)
+# summary(no3_full_interx_smooth)
+# summary(no3_full_interx_smooth$gam)
+# 
+# plot(no3_full_interx_smooth$gam, pages = 1)
+# 
+# ## Compare fitted values between GLMM and GAMM
+# fitted(no3_full_interx)
+# predict(no3_full_interx_smooth$gam,
+#         newdata = no3_ai_join, type = "response")
+# 
+# # empty df for predicted values from gam
+# pdat = expand.grid(year = seq(2000, 2017, length = 170),
+#                     county_type = c(0, 1),
+#                    popd_q = "(160,382]",
+#                    hhinc_q = "(4.45e+04,4.72e+04]")
+# 
+# 
+# # add in predicted values from gam
+# xp <- predict(no3_full_interx_smooth$gam, newdata = pdat, type = 'lpmatrix')
+# xp
+# 
+# ## which cols of xp relate to splines of interest?
+# c1 <- grepl('0', colnames(xp))
+# c2 <- grepl('1', colnames(xp))
+# ## which rows of xp relate to sites of interest?
+# r1 <- with(pdat, county_type == '0')
+# r2 <- with(pdat, county_type == '1')
+# 
+# ## difference rows of xp for data from comparison
+# X <- xp[r1, ] - xp[r2, ]
+# ## zero out cols of X related to splines for other lochs
+# X[, ! (c1 | c2)] <- 0
+# ## zero out the parametric cols
+# X[, !grepl('^s\\(', colnames(xp))] <- 0
+# #extract betas
+# dif <- X %*% coef(no3_full_interx_smooth$gam)
+# #extract se
+# se <- sqrt(rowSums((X %*% vcov(no3_full_interx_smooth$gam)) * X))
+# #calculate CI
+# crit <- qt(.975, df.residual(no3_full_interx_smooth$gam))
+# upr <- dif + (crit * se)
+# lwr <- dif - (crit * se)
+# 
+# # function to do it all in 1
+# smooth_diff <- function(model, newdata, f1, f2, var, alpha = 0.05,
+#                         unconditional = FALSE) {
+#     xp <- predict(model, newdata = newdata, type = 'lpmatrix')
+#     c1 <- grepl(f1, colnames(xp))
+#     c2 <- grepl(f2, colnames(xp))
+#     r1 <- newdata[[var]] == f1
+#     r2 <- newdata[[var]] == f2
+#     ## difference rows of xp for data from comparison
+#     X <- xp[r1, ] - xp[r2, ]
+#     ## zero out cols of X related to splines for other lochs
+#     X[, ! (c1 | c2)] <- 0
+#     ## zero out the parametric cols
+#     X[, !grepl('^s\\(', colnames(xp))] <- 0
+#     dif <- X %*% coef(model)
+#     se <- sqrt(rowSums((X %*% vcov(model, unconditional = unconditional)) * X))
+#     crit <- qt(alpha/2, df.residual(model), lower.tail = FALSE)
+#     upr <- dif + (crit * se)
+#     lwr <- dif - (crit * se)
+#     data.frame(pair = paste(f1, f2, sep = '-'),
+#                diff = dif,
+#                se = se,
+#                upper = upr,
+#                lower = lwr)
+# }
+# 
+# comp1 <- smooth_diff(no3_full_interx_smooth$gam, pdat, '1', '0', 'county_type')
+# comp <- cbind(year = seq(2000, 2017, length = 170),
+#               rbind(comp1))
+# 
+# comp
+# 
+# # plot smoothed difference
+# # ggplot(comp, aes(x = year, y = diff, group = pair)) +
+# #     geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+# #     geom_line() 
+# 
+# ggplot(comp, aes(x = year, y = diff, group = pair)) +
+#     geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+#     geom_line() +
+#   labs(x = "Year",
+#        y = expression(paste("Mean Difference in NO3 (", mu, "g/", m^3, ")")),
+#        fill = "County Type") +
+#   theme(plot.title = element_text(size = 18),
+#         axis.title = element_text(size = 16),
+#         axis.text = element_text(size = 12),
+#         axis.title.x=element_blank()) +
+#   scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+#   guides(x =  guide_axis(angle = 45)) +
+#   geom_hline(yintercept=0, linetype="solid", color = "red") +
+#   theme_linedraw()
+# ggsave("figures/effectmod_plots/no3/no3_smooth_k7.png", width = 6, height = 4, dpi = 300)
+# 
+# 
+# # compare with original glmm
+# no3_interx_plot
+```
+
+```{r 5 knots}
+# # using splines
+# library(splines)
+# library(mgcv)
+# library(gamm4)
+# no3_full_interx_smooth = gamm4(no3 ~ county_type +
+#                                  s(year, by = county_type, k = 5) + # specify k knots
+#                                  popd_q + 
+#                                  hhinc_q,
+#                                random = ~(1|State/County),
+#                                data =  no3_ai_join)
+# summary(no3_full_interx_smooth)
+# summary(no3_full_interx_smooth$gam)
+# 
+# plot(no3_full_interx_smooth$gam, pages = 1)
+# 
+# 
+# # empty df for predicted values from gam
+# pdat = expand.grid(year = seq(2000, 2017, length = 170),
+#                     county_type = c(0, 1),
+#                    popd_q = "(160,382]",
+#                    hhinc_q = "(4.45e+04,4.72e+04]")
+# 
+# 
+# # add in predicted values from gam
+# xp <- predict(no3_full_interx_smooth$gam, newdata = pdat, type = 'lpmatrix')
+# xp
+# 
+# ## which cols of xp relate to splines of interest?
+# c1 <- grepl('0', colnames(xp))
+# c2 <- grepl('1', colnames(xp))
+# ## which rows of xp relate to sites of interest?
+# r1 <- with(pdat, county_type == '0')
+# r2 <- with(pdat, county_type == '1')
+# 
+# ## difference rows of xp for data from comparison
+# X <- xp[r1, ] - xp[r2, ]
+# ## zero out cols of X related to splines for other lochs
+# X[, ! (c1 | c2)] <- 0
+# ## zero out the parametric cols
+# X[, !grepl('^s\\(', colnames(xp))] <- 0
+# #extract betas
+# dif <- X %*% coef(no3_full_interx_smooth$gam)
+# #extract se
+# se <- sqrt(rowSums((X %*% vcov(no3_full_interx_smooth$gam)) * X))
+# #calculate CI
+# crit <- qt(.975, df.residual(no3_full_interx_smooth$gam))
+# upr <- dif + (crit * se)
+# lwr <- dif - (crit * se)
+# 
+# # function to do it all in 1
+# smooth_diff <- function(model, newdata, f1, f2, var, alpha = 0.05,
+#                         unconditional = FALSE) {
+#     xp <- predict(model, newdata = newdata, type = 'lpmatrix')
+#     c1 <- grepl(f1, colnames(xp))
+#     c2 <- grepl(f2, colnames(xp))
+#     r1 <- newdata[[var]] == f1
+#     r2 <- newdata[[var]] == f2
+#     ## difference rows of xp for data from comparison
+#     X <- xp[r1, ] - xp[r2, ]
+#     ## zero out cols of X related to splines for other lochs
+#     X[, ! (c1 | c2)] <- 0
+#     ## zero out the parametric cols
+#     X[, !grepl('^s\\(', colnames(xp))] <- 0
+#     dif <- X %*% coef(model)
+#     se <- sqrt(rowSums((X %*% vcov(model, unconditional = unconditional)) * X))
+#     crit <- qt(alpha/2, df.residual(model), lower.tail = FALSE)
+#     upr <- dif + (crit * se)
+#     lwr <- dif - (crit * se)
+#     data.frame(pair = paste(f1, f2, sep = '-'),
+#                diff = dif,
+#                se = se,
+#                upper = upr,
+#                lower = lwr)
+# }
+# 
+# comp1 <- smooth_diff(no3_full_interx_smooth$gam, pdat, '1', '0', 'county_type')
+# comp <- cbind(year = seq(2000, 2017, length = 170),
+#               rbind(comp1))
+# 
+# comp
+# 
+# # plot smoothed difference
+# # ggplot(comp, aes(x = year, y = diff, group = pair)) +
+# #     geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+# #     geom_line() 
+# 
+# ggplot(comp, aes(x = year, y = diff, group = pair)) +
+#     geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+#     geom_line() +
+#   labs(x = "Year",
+#        y = expression(paste("Mean Difference in NO3 (", mu, "g/", m^3, ")")),
+#        fill = "County Type") +
+#   theme(plot.title = element_text(size = 18),
+#         axis.title = element_text(size = 16),
+#         axis.text = element_text(size = 12),
+#         axis.title.x=element_blank()) +
+#   scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+#   guides(x =  guide_axis(angle = 45)) +
+#   geom_hline(yintercept=0, linetype="solid", color = "red") +
+#   theme_linedraw()
+# ggsave("figures/effectmod_plots/no3/no3_smooth_k5.png", width = 6, height = 4, dpi = 300)
+# 
+# 
+# # compare with original glmm
+# no3_interx_plot
+```
+
+
+```{r Compare GLM and GAM}
+# # 1. run GLM and GAM with only year as fixed effect
+# no3_glm = glm(no3 ~ as.factor(year),
+#     data = no3_ai_join)
+# summary(no3_glm)
+# no3_gam = gam(no3 ~ s(year),
+#     data = no3_ai_join)
+# summary(no3_gam)
+# 
+# ## compare GLM and GAM fitted values
+# no3_glm_gam_pt = tibble(
+#   fit_glm = fitted(no3_glm),
+#   fit_gam = fitted(no3_gam)) %>% 
+#   ggplot(aes(x = fit_glm, y = fit_gam)) + 
+#   geom_point() 
+# 
+# no3_glm_gam_hist = tibble(
+#   fit_glm = fitted(no3_glm),
+#   fit_gam = fitted(no3_gam)) %>% 
+#   mutate(diff = fit_glm - fit_gam) %>% 
+#   ggplot(aes(x = diff)) + geom_histogram() 
+# require(cowplot)
+# plot_grid(no3_glm_gam_pt, no3_glm_gam_hist, ncol=2)
+# ### notes: seem to fit along the identity line (at least, not the horizontal striations we saw above). small range of differences in values based on histogram.
+# 
+# # 2. run GLM and GAM with year AND county as fixed effects
+# ## sample 10,000 rows because otherwise it will take forever to run
+# 
+# no3_ai_sample = sample_n(no3_ai_join, 10000)
+# no3_glm_countyfixed = glm(no3 ~ as.factor(year) + County,
+#     data = no3_ai_sample)
+# summary(no3_glm_countyfixed)
+# no3_gam_countyfixed = gam(no3 ~ s(year) + County,
+#     data = no3_ai_sample)
+# summary(no3_gam_countyfixed)
+# 
+# ## compare GLM and GAM fitted values
+# no3_glm_gam_county_pt = tibble(
+#   fit_glm = fitted(no3_glm_countyfixed),
+#   fit_gam = fitted(no3_gam_countyfixed)) %>% 
+#   ggplot(aes(x = fit_glm, y = fit_gam)) + 
+#   geom_point() 
+# 
+# no3_glm_gam_county_hist = tibble(
+#   fit_glm = fitted(no3_glm_countyfixed),
+#   fit_gam = fitted(no3_gam_countyfixed)) %>% 
+#   mutate(diff = fit_glm - fit_gam) %>% 
+#   ggplot(aes(x = diff)) + geom_histogram() 
+# 
+# 
+# plot_grid(no3_glm_gam_county_pt, no3_glm_gam_county_hist)
+# ### notes: also seem to fit along the identity line (at least, not the horizontal striations we saw above). small range of differences in values based on histogram. a good sign!
+# 
+# 
+# # 3. Run GLMM and GAMM with county as a nested random effect within states
+# no3_glmm_county = lmer(no3 ~ as.factor(year) + (1|State/County),
+#     data = no3_ai_join)
+# summary(no3_glmm_county)
+# 
+# no3_gamm_county = gamm4(no3 ~ s(year, k = 10),
+#                            random = ~(1|State/County),
+#                        data = no3_ai_join)
+# summary(no3_gamm_county$gam)
+# 
+# ## compare GLMM and GAMM fitted values using $mer
+# no3_glmm_gamm_pt = tibble(
+#   fit_glmm = fitted(no3_glmm_county),
+#   fit_gamm = fitted(no3_gamm_county$mer)) %>% 
+#   ggplot(aes(x = fit_glmm, y = fit_gamm)) + 
+#   geom_point() 
+# 
+# no3_glmm_gamm_hist = tibble(
+#   fit_glm = fitted(no3_glmm_county),
+#   fit_gam = fitted(no3_gamm_county$mer)) %>% 
+#   mutate(diff = fit_glm - fit_gam) %>% 
+#   ggplot(aes(x = diff)) + geom_histogram() 
+# 
+# plot_grid(no3_glmm_gamm_pt, no3_glmm_gamm_hist)
+# 
+# ## compare gamm4 $gam vs. $mer
+# no3_gam_mer_pt = tibble(
+#   fit_gamm_gam = fitted(no3_gamm_county$gam),
+#   fit_gamm_mer = fitted(no3_gamm_county$mer)) %>% 
+#   ggplot(aes(x = fit_gamm_gam, y = fit_gamm_mer)) + 
+#   geom_point() 
+# 
+# no3_gam_mer_hist = tibble(
+#   fit_gamm_gam = fitted(no3_gamm_county$gam),
+#   fit_gamm_mer = fitted(no3_gamm_county$mer)) %>% 
+#   mutate(diff = fit_gamm_gam - fit_gamm_mer) %>% 
+#   ggplot(aes(x = diff)) + geom_histogram() 
+# plot_grid(no3_gam_mer_pt, no3_gam_mer_hist)
+
+```

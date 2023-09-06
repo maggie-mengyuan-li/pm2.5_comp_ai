@@ -1,0 +1,1254 @@
+---
+title: "Descriptive Maps"
+author: "Maggie Li (ml4424)"
+date: "10/5/2021"
+output: html_document
+---
+
+# Map county-level PM2.5 component concentration changes across the study period (for presentations)
+
+```{r read in libraries}
+library(tidyverse)
+library(sf)
+library(sp)
+library(rgdal)
+library(raster)
+library(tmap)
+library(leaflet) 
+library(ggplot2) 
+library(ggcorrplot)
+```
+
+```{r read in data}
+comp_ai_join = read_csv("data/county_concentrations/allyrs/comp_ai_join.csv")
+
+# collapse all om values larger than 10 to 10, for nicer map
+om_transform = comp_ai_join %>% 
+  mutate(om = ifelse(om <= 10, om, 10)) 
+om_transform %>% filter(om <= 10)
+```
+
+## 1. Create facet maps for each component; raw concentrations for each county in 2000, 2005, 2010, 2015
+
+```{r read in data and select years}
+# read in all counties shapefile
+counties_shp <- "data/cb_2018_us_county_500k/cb_2018_us_county_500k.shp"
+all_counties <- st_read(counties_shp, stringsAsFactors = FALSE)
+
+# group all_counties by state fips, exclude territories and hawaii and alaska
+all_counties <- all_counties %>% arrange(STATEFP) %>%
+  filter(STATEFP != "02",
+         STATEFP != "15",
+         STATEFP <= "56")
+unique(all_counties$STATEFP)
+
+# convert component data into sf file
+comp_ai_join_1 = comp_ai_join %>%
+  rename(GEOID=County)
+
+comp_ai_join_sf = merge(all_counties, comp_ai_join_1, left = F) 
+
+comp_ai_join_sf_map = comp_ai_join_sf %>% 
+  filter(year %in% c(2000, 2005, 2010, 2015))
+
+# do the same with OM transformed dataset
+om_transform = om_transform %>%
+  rename(GEOID=County)
+om_transform_sf = merge(all_counties, om_transform, left = F) 
+om_transform_sf_map = om_transform_sf %>% 
+  filter(year %in% c(2000, 2005, 2010, 2015))
+```
+
+### 1.1 Create map for each component decline
+```{r BC}
+# facet maps for bc
+bc_county_map = tm_shape(comp_ai_join_sf_map) +
+  tm_borders(lwd = 0) +
+  tm_polygons(col = "bc", 
+              title = "BC concentrations",
+              style = "cont") +
+  tm_facets(by = "year", nrow = 4, free.coords = FALSE)
+bc_county_map
+# tmap_save(bc_county_map, "descriptive_maps/bc.png") 
+
+```
+
+
+```{r NH4}
+# facet maps for nh4
+nh4_county_map = tm_shape(comp_ai_join_sf_map) +
+  tm_borders(lwd = 0) +
+  tm_polygons(col = "nh4", 
+              title = "NH4 concentrations",
+              style = "cont") +
+  tm_facets(by = "year", nrow = 4, free.coords = FALSE)
+
+# tmap_save(nh4_county_map, "descriptive_maps/nh4.png") 
+
+```
+
+
+```{r NO3}
+# facet maps for no3
+no3_county_map = tm_shape(comp_ai_join_sf_map) +
+  tm_borders(lwd = 0) +
+  tm_polygons(col = "no3", 
+              title = "NO3 concentrations",
+              style = "cont") +
+  tm_facets(by = "year", nrow = 4, free.coords = FALSE)
+
+# tmap_save(no3_county_map, "descriptive_maps/no3.png") 
+
+```
+
+
+
+```{r OM}
+# facet maps for om
+om_county_map = tm_shape(om_transform_sf_map) +
+  tm_borders(lwd = 0) +
+  tm_polygons(col = "om", 
+              title = "OM concentrations",
+              style = "cont") +
+  tm_facets(by = "year", nrow = 4, free.coords = FALSE)
+om_county_map
+# tmap_save(om_county_map, "descriptive_maps/om.png") 
+
+```
+
+```{r SO4}
+# facet maps for so4
+so4_county_map = tm_shape(comp_ai_join_sf_map) +
+  tm_borders(lwd = 0) +
+  tm_polygons(col = "so4", 
+              title = "SO4 concentrations",
+              style = "cont") +
+  tm_facets(by = "year", nrow = 4, free.coords = FALSE)
+
+# tmap_save(so4_county_map, "descriptive_maps/so4.png") 
+
+```
+
+
+```{r Soil}
+# facet maps for soil
+soil_county_map = tm_shape(comp_ai_join_sf_map) +
+  tm_borders(lwd = 0) +
+  tm_polygons(col = "soil", 
+              title = "Soil concentrations",
+              style = "cont") +
+  tm_facets(by = "year", nrow = 4, free.coords = FALSE)
+
+# tmap_save(soil_county_map, "descriptive_maps/soil.png") 
+
+```
+
+## 2. Map sulfate trends from 2000 to 2017, overlay AI counties on top.
+This was to investigate what the declines over the entire study period looked like in AI vs. non-AI pop counties. Our conclusion from the visualization below (so4_trend_map) was that declines occurred mostly in non-AI pop counties.
+
+```{r prepare data for mapping}
+# Filter comp AI dataset to only sulfate, 2000 and 2017 
+so4_ai_2000 = comp_ai_join_1 %>% 
+  filter(year == 2000) %>% 
+  dplyr::select(GEOID, so4, county_type) %>% 
+  rename(so4_2000 = so4)
+
+so4_ai_2017 = comp_ai_join_1 %>% 
+  filter(year == 2017) %>% 
+  dplyr::select(GEOID, so4, county_type) %>% 
+  rename(so4_2017 = so4)
+
+so4_ai_2000
+so4_ai_2017
+
+so4_ai_2000_17 = left_join(so4_ai_2000, so4_ai_2017) %>% 
+  mutate(so4_trend = so4_2017 - so4_2000)
+
+so4_ai_2000_17_sf = merge(all_counties, so4_ai_2000_17, left = F)
+
+```
+
+Resource to create map: https://rstudio-pubs-static.s3.amazonaws.com/285359_35d630ddbc554c62b9137c13f063ee0e.html
+
+```{r making base map}
+library(ggmap)
+library(mapdata)
+
+#name the built-in state dataset in map_data to 'states'
+states <- map_data("state")
+
+#name the built-in county dataset in mapdata to 'counties'
+counties <- map_data("county")
+
+#create key to have column with state abbreviation to join with our dataset
+state_key <- data.frame(state.name, state.abb) 
+names(state_key) <- c("region","state_abb")
+state_key = state_key %>% mutate(region = tolower(region),
+                                 state_abb = tolower(state_abb))
+print(state_key)
+
+#convert counties region column from full name to abbreviation and rename to region to match our dataset
+counties = counties %>% 
+  left_join(state_key) %>% 
+  dplyr::select(-region) %>% 
+  rename(region = state_abb) 
+counties
+
+#view(counties)
+
+base <- ggplot(data = states, mapping = aes(x = long, y = lat, group = group)) +
+  coord_fixed(1.3) + geom_polygon(color = "black", fill = "white")
+base
+
+#add outlines of the counties on which to our stage map
+base + geom_polygon(data = counties, fill = NA, color = "gray") + geom_polygon(color = "black", fill = NA)
+
+```
+
+
+```{r sulfate trends from 2000 to 2017}
+fipsnames<-read_csv("data/fipsnames.csv")
+
+fipsnames =
+  fipsnames %>%
+  rename("county_fips" = "FIPS") %>%
+  rename("region" = "State",
+         "subregion" =  "Name") %>%
+  mutate(region = str_to_lower(region),
+         subregion = str_to_lower(subregion))
+
+# column with fips codes including leading zero to match class_map_df
+GEOID <- formatC(fipsnames$county_fips, width = 5, format = "d", flag = "0")
+fipsnames = cbind(fipsnames, GEOID)
+fipsnames
+
+#making categories of median, 95th percentile
+
+#join with SO4 data with fipsnames and manually include miami dade, broomfield
+
+so4_ai_2000_17_join = so4_ai_2000_17 %>% 
+  left_join(fipsnames, by = c("GEOID")) %>%
+  mutate(region=ifelse(GEOID=="12086","fl",region)) %>%
+  mutate(subregion=ifelse(GEOID=="12086","miami-dade",subregion)) %>%
+  mutate(region=ifelse(GEOID=="08014","co",region)) %>%
+  mutate(subregion=ifelse(GEOID=="08014","broomfield",subregion)) 
+  
+
+so4_trend_map_df = left_join(counties, so4_ai_2000_17_join, 
+                              by = c("subregion", "region"), copy=FALSE) 
+so4_trend_map_df
+
+# ## replace 0 with non-AI, 1 with AI in county_type column
+so4_trend_map_df$county_type[so4_trend_map_df$county_type == "1"] <- "AI"
+so4_trend_map_df$county_type[so4_trend_map_df$county_type == "0"] <- "Non-AI"
+
+so4_trend_map_df
+
+# ## mutate county_type variable to be a factor to map
+# so4_trend_map_df = so4_trend_map_df %>% 
+#   mutate(county_type = factor(county_type, 
+#                               levels= c("1", "0")))
+
+# fill in NA value counties (washington DC, lagrange, obrien, ste genevieve, yellowstone natl park, suffolk, hampton, newport news, norfolk, virginia beach) as non-AI for county_type
+subset(so4_trend_map_df,is.na(so4_2000))
+
+so4_trend_map_df = so4_trend_map_df %>%
+  replace_na(list(county_type = "non-AI"))
+so4_trend_map_df
+
+subset(so4_trend_map_df,is.na(GEOID))
+summary(so4_trend_map_df)
+
+
+#add a fill to our county map based on data
+so4_trend_map = base +
+  geom_polygon(data = so4_trend_map_df, 
+               aes(fill = so4_trend,
+                   col = county_type), 
+               size = .2) +
+  scale_colour_manual(breaks = c("AI",
+                                 "Non-AI",
+                                 "NA"), 
+                    values = c("red", "transparent", "transparent")) +
+  theme_bw() 
+
+ggsave(filename="figures/so4_trend_AI_overlay.png", plot=so4_trend_map, width=10, height=8, units="in", bg='transparent')
+
+
+# #also remove all of the axes and borders and add a Title
+# so4_trend_map <- base +
+#   geom_polygon(data = so4_trend_map_df, 
+#                aes(fill = so4_trend), 
+#                size =.05) +
+#   geom_polygon(color = "black", fill = NA) +
+#   theme_bw() 
+# so4_trend_map
+# 
+# # transform the scale of the fill gradient to create more color variation
+# # also customize the legend breaks and a legend title
+# 
+# county_ai_map2 <- so4_trend_map +
+#   geom_polygon(data = so4_trend_map_df, 
+#                aes(col = county_type), 
+#                size =.05) + 
+#   labs(fill = "AI-populated counties", 
+#        y="Latitude", 
+#        x="Longitude") + 
+#   scale_fill_manual(values = c("#56B4E9", "#CC79A7","#0072B2", "#009E73", "#E69F00", "#FFFFFF"), 
+#                     labels = c("Al/AN County Census Population >5% Only", 
+#                                "County Area >20% within Fed Recognized Tribal Entity Only",
+#                                "Both Census and Tribal Entity Classified Only", 
+#                                "Both Census and Rural Cluster Classified Only", 
+#                                "Fits All Classification Schemes",
+#                                "Non-AI populated County")) +
+#   ggthemes::theme_map() + 
+#   theme(legend.title = element_text(hjust = 0.5, face = "bold", size=9),
+#         legend.position = "right",
+#         axis.text.x = element_blank(), axis.text.y = element_blank(),
+#         axis.ticks = element_blank(),
+#         panel.background = element_rect(fill='transparent'),
+#         plot.background = element_rect(fill='transparent', color=NA),
+#         legend.background = element_rect(fill='transparent'),
+#         legend.box.background = element_rect(fill='transparent')) + 
+#   guides(shape = guide_legend(override.aes = list(size = 8)),
+#                color = guide_legend(override.aes = list(size = 7)),
+#                shape = guide_legend(override.aes = list(size = 5))) +
+#         theme(legend.title = element_text(size = 7),
+#               legend.text  = element_text(size = 7))
+# county_ai_map2
+# 
+# ggsave(filename="figures/ai_map_transparent.png", plot=county_ai_map2, width=10, height=8, units="in", bg='transparent')
+
+```
+```{r extract average and max declines by AI county type}
+so4_trend_map_df %>% 
+  filter(county_type == "AI") %>% 
+  summary()
+
+so4_trend_map_df %>% 
+  filter(county_type == "Non-AI") %>% 
+  summary()
+
+so4_trend_map_df %>% 
+  filter(county_type == "AI") %>% 
+  pull(so4_trend) %>% 
+  mean()
+
+so4_trend_map_df %>% 
+  filter(county_type == "Non-AI") %>% 
+  pull(so4_trend) %>% 
+  mean()
+
+so4_trend_map_df %>% 
+  filter(county_type == "AI") %>% 
+  pull(so4_trend) %>% 
+  max()
+
+so4_trend_map_df %>% 
+  filter(county_type == "Non-AI") %>% 
+  pull(so4_trend) %>% 
+  max()
+```
+
+## 3. Map with AI-pop counties by colored classification schemes and borders for East/West
+```{r making base map}
+library(ggmap)
+library(mapdata)
+
+#name the built-in state dataset in map_data to 'states'
+states <- map_data("state")
+
+#create key to have column with state abbreviation to join with our dataset
+state_key <- data.frame(state.name, state.abb) 
+names(state_key) <- c("region","state_abb")
+state_key = state_key %>% mutate(region = tolower(region))
+print(state_key)
+
+base <- ggplot(data = states, 
+               mapping = aes(x = long, y = lat, group = group)) +
+  coord_fixed(1.3) + 
+  geom_polygon(color = "black", fill = "white") + 
+  theme_bw() 
+base
+```
+### Define AI counties as an sp file, by joining county lists of all 3 classifications with a county shapefile
+```{r}
+# map all native counties; to get sense of location to compare to monitor coverage
+counties <- readOGR("data/cb_2018_us_county_500k/cb_2018_us_county_500k.shp")
+summary(counties)
+
+# read in counties by different classifications from 2_define_vars.Rmd
+census = read_csv("data/ai_classifications/census.csv")
+cluster = read_csv("data/ai_classifications/cluster.csv")
+reservation = read_csv("data/ai_classifications/reservation.csv")
+
+all_native_counties <- rbind(census, reservation, cluster)
+
+# only keep unique values, because classification definitions overlap
+all_native_counties <- unique(all_native_counties) 
+
+# Get list of all US counties from census
+library(tidycensus)
+total_pop <- "P001001"
+all_counties = get_decennial(geography = "county", 
+                               variables = total_pop, 
+                               year = 2010)
+
+all_counties$State <- substr(all_counties$GEOID, 0, 2)
+all_counties$State <- as.numeric(all_counties$State)
+all_counties <- all_counties %>%
+  filter(State <= 56,
+         State != 2,
+         State != 15) #filter out HI, AL, US territories
+
+# County list of all non-native counties
+all_counties_list <- all_counties %>% dplyr::select(GEOID) %>% 
+  dplyr::rename(County = GEOID) #cleaned all_counties df to use in anti_join
+all_general_counties <- anti_join(x = all_counties_list,
+                                  y = all_native_counties,
+                                  by= "County") %>% 
+  filter(!str_detect(County, "^02"),
+         !str_detect(County, "^15")) 
+
+all_native_counties$county_type <- 1
+all_general_counties$county_type <- 0
+
+# need to filter out FIPS 46113, because it is a repeat of FIPS 46113 (Shannon County, SD was renamed Oglala Lakota County in 2015) 
+all_native_counties <- all_native_counties %>% 
+  filter(!County == "46113")
+
+#census
+census_counties <- census %>%
+  mutate(County = str_replace(County, "46113", "46102")) %>% 
+  dplyr::rename(GEOID = County) 
+census_counties$State <- substr(census_counties$GEOID, 0, 2)
+census_counties$State <- as.numeric(census_counties$State)
+census_counties <- census_counties %>% filter(State <= 56,
+                                              State != 2,
+                                              State != 15)
+census_counties
+census_shp <- merge(counties, census_counties, by = 'GEOID', all = FALSE, duplicateGeoms = TRUE)
+length(census_counties$GEOID)
+length(census_shp$GEOID) 
+
+#cluster
+cluster_counties <- cluster %>%
+  mutate(County = str_replace(County, "46113", "46102")) %>% 
+  dplyr::rename(GEOID = County)
+cluster_counties$State <- substr(cluster_counties$GEOID, 0, 2)
+cluster_counties$State <- as.numeric(as.character(cluster_counties$State))
+cluster_counties <- cluster_counties %>% filter(State <= 56,
+                                              State != 2,
+                                              State != 15)
+cluster_counties
+cluster_shp <- merge(counties, cluster_counties, by = 'GEOID', 
+                     all = FALSE, duplicateGeoms = TRUE)
+summary(cluster_shp)
+length(cluster_counties$GEOID)
+length(cluster_shp$GEOID) 
+
+#reservation
+reservation_counties <- reservation %>% 
+  mutate(County = str_replace(County, "46113", "46102")) %>% 
+  dplyr::rename(GEOID = County)
+reservation_counties$State <- substr(reservation_counties$GEOID, 0, 2)
+reservation_counties$State <- as.numeric(reservation_counties$State)
+reservation_counties <- reservation_counties %>% 
+  filter(State <= 56,
+         State != 2,
+         State != 15) 
+unique(reservation_counties$GEOID)
+reservation_shp <- merge(counties, reservation_counties, by = 'GEOID', 
+                 all = FALSE, duplicateGeoms = TRUE)
+length(reservation_counties$GEOID)
+length(reservation_shp$GEOID) 
+
+
+```
+
+### Show overlap of AI county definitions (data visualized in venn diagram)
+```{r}
+# Non-restricted for each definition (main analysis)
+census_counties <- census_counties %>%
+  dplyr::select(GEOID)
+cluster_counties <- cluster_counties %>%
+  dplyr::select(GEOID)
+reservation_counties <- reservation_counties %>%
+  dplyr::select(GEOID)
+
+#three-way overlap
+all_overlap <- cluster_counties %>% 
+  inner_join(census_counties) %>% 
+  inner_join(reservation_counties) %>% 
+  mutate(county_type = "all_class")
+all_overlap
+nrow(all_overlap) #number of counties that fit all three definitions
+
+#two-way overlap
+cluster_census <- cluster_counties %>% 
+  inner_join(census_counties) %>% 
+  anti_join(all_overlap) %>% 
+  mutate(county_type = "cluster_census")
+nrow(cluster_census)
+
+cluster_reservation <- cluster_counties %>%
+  inner_join(reservation_counties) %>% 
+  anti_join(all_overlap) %>% 
+  mutate(county_type = "cluster_reservation")
+nrow(cluster_reservation)
+
+census_reservation <- census_counties %>%
+  inner_join(reservation_counties) %>% 
+  anti_join(all_overlap) %>% 
+  mutate(county_type = "census_reservation")
+nrow(census_reservation)
+
+#exclusive to each definition
+census_only <- census_counties %>%
+  anti_join(census_reservation) %>%
+  anti_join(cluster_census) %>%
+  anti_join(all_overlap) %>% 
+  mutate(county_type = "census_only")
+nrow(census_only)
+
+# cluster_only <- cluster_counties %>%
+#   anti_join(cluster_census) %>%
+#   anti_join(cluster_reservation) %>%
+#   anti_join(all_overlap)
+# nrow(cluster_only) ##NO COUNTIES
+
+reservation_only <- reservation_counties %>%
+  anti_join(cluster_reservation) %>%
+  anti_join(census_reservation) %>%
+  anti_join(all_overlap) %>% 
+  mutate(county_type = "reservation_only")
+nrow(reservation_only)
+
+## combine all AI classifications into one df
+ai_class_map_df = rbind(census_only,
+      reservation_only,
+      census_reservation,
+      cluster_census,
+      all_overlap) %>%
+  mutate(county_type = factor(county_type, 
+                              levels= c("census_only", "reservation_only", 
+                                        "census_reservation", "cluster_census", 
+                                        "all_class"))) %>% 
+  mutate(GEOID = str_replace(GEOID, "46102", "46113")) # to match with mapping
+  
+ai_class_map_df
+## don't need to run below, because we are just mapping AI-populated counties on top of a blank counties basemap below
+
+## pull non-AI counties from 2_define_vars.Rmd
+nai_class_map_df = all_general_counties %>%
+  mutate(county_type = case_when(
+    county_type == 0 ~ "non-AI")) %>%
+  rename(GEOID = County)
+
+## join all AI and non-AI classified counties into one df
+class_map_df = rbind(ai_class_map_df,
+                     nai_class_map_df)
+class_map_df
+```
+
+### Convert overlap counties to shp and only census and reservation classifications
+
+```{r}
+# Cluster x Census
+cluster_census_counties <- cluster_census
+cluster_census_counties$State <- substr(cluster_census_counties$GEOID, 0, 2)
+cluster_census_counties$State <- as.numeric(cluster_census_counties$State)
+cluster_census_counties <- cluster_census_counties %>% filter(State <= 56,
+                                              State != 2,
+                                              State != 15)
+cluster_census_counties
+cluster_census_shp <- merge(counties, cluster_census_counties, 
+                    by = 'GEOID', all = FALSE, duplicateGeoms = TRUE)
+length(cluster_census_counties$GEOID)
+length(cluster_census_shp$GEOID)
+
+# Cluster x Reservation -- dont run b/c no counties
+# cluster_reservation_counties <- cluster_reservation
+# cluster_reservation_counties$State <- substr(cluster_reservation_counties$GEOID, 0, 2)
+# cluster_reservation_counties$State <- as.numeric(cluster_reservation_counties$State)
+# cluster_reservation_counties <- cluster_reservation_counties %>% filter(State <= 56,
+#                                               State != 2,
+#                                               State != 15)
+# cluster_reservation_counties
+# cluster_reservation_shp <- merge(counties, cluster_reservation_counties, 
+#                     by = 'GEOID', all = FALSE, duplicateGeoms = TRUE)
+# length(cluster_reservation_counties$GEOID)
+# length(cluster_reservation_shp$GEOID)
+
+# Census x Reservation
+census_reservation_counties <- census_reservation
+census_reservation_counties$State <- substr(census_reservation_counties$GEOID, 0, 2)
+census_reservation_counties$State <- as.numeric(census_reservation_counties$State)
+census_reservation_counties <- census_reservation_counties %>% filter(State <= 56,
+                                              State != 2,
+                                              State != 15)
+census_reservation_counties
+census_reservation_shp <- merge(counties, census_reservation_counties, 
+                    by = 'GEOID', all = FALSE, duplicateGeoms = TRUE)
+length(census_reservation_counties$GEOID)
+length(census_reservation_shp$GEOID)
+
+# All overlap
+all_overlap_counties <- all_overlap
+all_overlap_counties$State <- substr(all_overlap_counties$GEOID, 0, 2)
+all_overlap_counties$State <- as.numeric(all_overlap_counties$State)
+all_overlap_counties <- all_overlap_counties %>% filter(State <= 56,
+                                              State != 2,
+                                              State != 15)
+all_overlap_counties
+all_overlap_shp <- merge(counties, all_overlap_counties, 
+                    by = 'GEOID', all = FALSE, duplicateGeoms = TRUE)
+length(all_overlap_counties$GEOID)
+length(all_overlap_shp$GEOID)
+
+# Only census
+census_only_counties <- census_only
+census_only_counties$State <- substr(census_only_counties$GEOID, 0, 2)
+census_only_counties$State <- as.numeric(census_only_counties$State)
+census_only_counties <- census_only_counties %>% filter(State <= 56,
+                                              State != 2,
+                                              State != 15)
+census_only_counties
+census_only_shp <- merge(counties, census_only_counties, 
+                    by = 'GEOID', all = FALSE, duplicateGeoms = TRUE)
+length(census_only_counties$GEOID)
+length(census_only_shp$GEOID)
+
+# Tribal entity only
+reservation_only_counties <- reservation_only
+reservation_only_counties$State <- substr(reservation_only_counties$GEOID, 0, 2)
+reservation_only_counties$State <- as.numeric(reservation_only_counties$State)
+reservation_only_counties <- reservation_only_counties %>% filter(State <= 56,
+                                              State != 2,
+                                              State != 15)
+reservation_only_counties
+reservation_only_shp <- merge(counties, reservation_only_counties, 
+                    by = 'GEOID', all = FALSE, duplicateGeoms = TRUE)
+length(reservation_only_counties$GEOID)
+length(reservation_only_shp$GEOID)
+
+```
+
+Resource to create map: https://rstudio-pubs-static.s3.amazonaws.com/285359_35d630ddbc554c62b9137c13f063ee0e.html
+
+```{r making base map}
+library(ggmap)
+library(mapdata)
+
+#name the built-in state dataset in map_data to 'states'
+states <- map_data("state")
+
+#name the built-in county dataset in mapdata to 'counties'
+counties <- map_data("county")
+
+#create key to have column with state abbreviation to join with our dataset
+state_key <- data.frame(state.name, state.abb) 
+names(state_key) <- c("region","state_abb")
+state_key = state_key %>% mutate(region = tolower(region),
+                                 state_abb = tolower(state_abb))
+print(state_key)
+
+#convert counties region column from full name to abbreviation and rename to region to match our dataset
+counties = counties %>% 
+  left_join(state_key) %>% 
+  dplyr::select(-region) %>% 
+  rename(region = state_abb) 
+counties
+
+#view(counties)
+
+# just states
+base <- ggplot(data = states, mapping = aes(x = long, y = lat, group = group)) +
+  coord_fixed(1.3) + geom_polygon(fill = "white")
+base
+
+# test map with counties and black border around states, not using this in paper
+base + geom_polygon(data = counties, fill = NA, color = "gray") + geom_polygon(color = "black", fill = NA)
+
+```
+```{r add colors for NOAA regions and outlines for West vs East}
+# get state fips codes with their NOAA climate region
+state_NOAA = read_csv("data/covariates.csv") %>%
+  dplyr::select(State, Climate_Zone) %>%
+  unique()
+state_NOAA
+# get state fips codes and state abbreviation
+state_fips = read_csv("data/state_fips.csv")
+state_fips
+# join the two to get one df with state fips, NOAAclimate zone, and state abbrev
+state_fips_NOAA_abbrev = left_join(state_NOAA, state_fips) %>%
+  rename(state_abb = State_Name)
+
+# join with state abbrev to get region
+state_fips_NOAA_abbrev_name = left_join(state_fips_NOAA_abbrev, state_key) %>%
+  replace(is.na(.), "district of columbia")
+
+# join with states lat/lon df to get full df with state names/abbrev and NOAA climate zone
+state_fips_NOAA_map_df = left_join(state_fips_NOAA_abbrev_name,
+                                states)
+state_fips_NOAA_map_df
+
+# get map of NOAA regions
+state_fips_NOAA_map =
+  base +
+  geom_polygon(data = state_fips_NOAA_map_df,
+               aes(fill = Climate_Zone)) +
+  theme_bw()
+state_fips_NOAA_map
+
+# subset to 2 dfs, one for east and one for west
+
+state_NOAA_west_df = state_fips_NOAA_map_df %>%
+  dplyr::select(-subregion) %>%
+  subset(State %in% c(53, 41, 6, 32, 16, 30, 56, 8, 49, 4, 35))
+
+state_NOAA_east_df = state_fips_NOAA_map_df %>%
+  dplyr::select(-subregion) %>%
+  subset(!State %in% c(53, 41, 6, 32, 16, 30, 56, 8, 49, 4, 35))
+
+```
+
+Note for Vivian: The AI-county types are mapping but the East/West boundaries are not mapping for some reason, but the maps outputted can be found in .../figures/descriptive_maps.
+
+```{r create map with AI counties and East/West border}
+fipsnames<-read_csv("data/fipsnames.csv")
+
+fipsnames =
+  fipsnames %>%
+  rename("county_fips" = "FIPS") %>%
+  rename("region" = "State",
+         "subregion" =  "Name") %>%
+  mutate(region = str_to_lower(region),
+         subregion = str_to_lower(subregion))
+
+# column with fips codes including leading zero to match class_map_df
+GEOID <- formatC(fipsnames$county_fips, width = 5, format = "d", flag = "0")
+fipsnames = cbind(fipsnames, GEOID)
+fipsnames
+
+#making categories of median, 95th percentile
+
+#join with class_map_df with fipsnames and manually include miami dade, broomfield (Note from Viv: explain why)
+
+class_map_df_join = class_map_df %>% 
+  left_join(fipsnames, by = c("GEOID")) %>%
+  mutate(region=ifelse(GEOID=="12086","fl",region)) %>%
+  mutate(subregion=ifelse(GEOID=="12086","miami-dade",subregion)) %>%
+  mutate(region=ifelse(GEOID=="08014","co",region)) %>%
+  mutate(subregion=ifelse(GEOID=="08014","broomfield",subregion)) 
+class_map_df_join
+
+county_ai_map_df = left_join(counties, class_map_df_join, 
+                              by = c("subregion", "region"), copy=FALSE) 
+county_ai_map_df
+
+
+# fill in NA value counties (washington DC, lagrange, obrien, ste genevieve, yellowstone natl park, suffolk, hampton, newport news, norfolk, virginia beach) as non-AI for county_type
+subset(county_ai_map_df,is.na(county_type))
+
+county_ai_map_df = county_ai_map_df %>%
+  replace_na(list(county_type = "non-AI"))
+county_ai_map_df
+
+subset(county_ai_map_df,is.na(GEOID))
+
+#add a fill to our county map based on data
+#also remove all of the axes and borders and add a Title
+county_ai_map <- base +
+  geom_polygon(data = county_ai_map_df, 
+               # x = long,
+               # y = lat,
+               aes(fill = county_type), 
+               color = "darkgray", 
+               size =.05) +
+  geom_polygon(fill = NA) +
+  theme_bw() 
+
+county_ai_map
+
+  base +
+  geom_sf(data = state_NOAA_sf,
+               aes(fill = Climate_Zone),
+          lwd = 0) +
+  geom_sf(data = state_NOAA_west_df,
+          color = "#66c2a5",
+          fill = NA) +
+  geom_sf(data = state_NOAA_east_df,
+          color = "#fc8d62",
+          fill = NA) 
+  
+# Full map with AI county types and East/West boundaries
+county_ai_map2 <- county_ai_map +
+  geom_polygon(data = state_NOAA_east_df,
+          color = "#fc8d62",
+          fill = NA) + 
+  labs(fill = "AI-populated counties by classification", 
+       y="Latitude", 
+       x="Longitude") + 
+  scale_fill_manual(values = c("#56B4E9", "#CC79A7","#0072B2", 
+                               "#009E73", "#E69F00", "#FFFFFF"), 
+                    labels = c("Al/AN County Census Population >5% Only", 
+                               "County Area >20% within Fed Recognized Tribal Entity Only",
+                               "Both Census and Tribal Entity Classified Only", 
+                               "Both Census and Rural Cluster Classified Only", 
+                               "Fits All Classification Schemes",
+                               "Non-AI populated County")) + # transform the fill gradient scale to create more color variation
+
+  # ggthemes::theme_map() + 
+  theme(legend.title = element_text(hjust = 0.5, face = "bold", size=9),
+        legend.position = "right",
+        axis.text.x = element_blank(), axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        panel.background = element_rect(fill='transparent'),
+        plot.background = element_rect(fill='transparent', color=NA),
+        legend.background = element_rect(fill='transparent'),
+        legend.box.background = element_rect(fill='transparent')) + 
+  guides(shape = guide_legend(override.aes = list(size = 8)),
+               color = guide_legend(override.aes = list(size = 7)),
+               shape = guide_legend(override.aes = list(size = 5))) + 
+        theme(legend.title = element_text(size = 7),
+              legend.text  = element_text(size = 7)) 
+
+county_ai_map2
+
+# ggsave(filename="figures/descriptive_maps/ai_map_both_geog.png", plot=county_ai_map2, width=10, height=8, units="in", bg='transparent')
+# 
+# ggsave(filename="figures/descriptive_maps/ai_map_west.png", plot=county_ai_map2, width=10, height=8, units="in", bg='transparent')
+
+# ggsave(filename="figures/descriptive_maps/ai_map_east.png", plot=county_ai_map2, width=10, height=8, units="in", bg='transparent')
+
+```
+
+## 4. **Supplement Map** that (1) splits the country to the NOAA regions that we ended up using (diff colors) and on top of that (2) with thick lines show the East/West regions we used for modification
+
+```{r only NOAA climate regions}
+
+# get sf files for these East vs West
+library(spData)
+us_states
+
+state_NOAA_west_df = us_states %>%
+  subset(GEOID %in% c("53", "41", "06", "32", "16", "30", "56", "08", "49", "04", "35")) %>%
+  st_union()
+
+state_NOAA_east_df = us_states %>%
+  subset(!GEOID %in% c("53", "41", "06", "32", "16", "30", "56", "08", "49", "04", "35",
+                       "02", "15")) %>% # dont forget to exclude alaska and hawaii
+  st_union()
+
+
+state_NOAA_geog_df =
+  base +
+  # state_fips_NOAA_map +
+  geom_sf(data = state_NOAA_west_df, col = "green", alpha = 0, size = 0.5,
+          fill = NA) +
+  # geom_polygon(data = state_NOAA_west_df, col = "black", fill = "gray", alpha = 0, size = 0.5) +
+  geom_polygon(data = state_NOAA_east_df, col = "red", alpha = 0, size = 0.5)
+
+
+# get sf files continental US
+library(spData)
+us_states
+
+# base map of continental US
+base = ggplot() +
+  geom_sf(data = us_states,
+          color = "black", 
+          fill = "white") + 
+  theme_minimal()
+base
+
+# get state fips codes with their NOAA climate region
+state_NOAA = read_csv("data/covariates.csv") %>% 
+  dplyr::select(State, Climate_Zone) %>% 
+  unique() %>% 
+  mutate(State = as.character(State),
+         State = str_pad(State, 2, pad = "0")) %>% # add leading zero to match GEOID in us_states sf file
+  rename(GEOID = State)
+state_NOAA
+
+state_NOAA_sf = left_join(us_states, state_NOAA)
+
+# get map of NOAA regions
+state_NOAA_map = 
+  base +
+  geom_sf(data = state_NOAA_sf, 
+               aes(fill = Climate_Zone),
+          lwd = 0) +
+  theme_bw() 
+state_NOAA_map
+
+state_NOAA_west_df = state_NOAA_sf %>%
+  subset(GEOID %in% c("53", "41", "06", "32", "16", "30", "56", "08", "49", "04", "35")) %>%
+  st_union()
+
+state_NOAA_east_df = state_NOAA_sf %>%
+  subset(!GEOID %in% c("53", "41", "06", "32", "16", "30", "56", "08", "49", "04", "35")) %>% 
+  st_union()
+
+## EAST AND WEST ONLY MAP
+
+state_geog_map = 
+  base  +
+  geom_sf(data = state_NOAA_west_df,
+          color = "#66c2a5",
+          fill = NA) +
+  geom_sf(data = state_NOAA_east_df,
+          color = "#fc8d62",
+          fill = NA) +
+  # + scale_color_manual(values = c("West" = "red", 
+  #                                "East" = "blue")) +
+  ggthemes::theme_map() +
+  theme(legend.title = element_text(hjust = 0.5, face = "bold", size=9),
+        legend.position = "right",
+        axis.text.x = element_blank(), axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        panel.background = element_rect(fill='transparent'),
+        plot.background = element_rect(fill='transparent', color=NA),
+        legend.background = element_rect(fill='transparent'),
+        legend.box.background = element_rect(fill='transparent')) +
+  guides(shape = guide_legend(override.aes = list(size = 8)),
+               color = guide_legend(override.aes = list(size = 7)),
+               shape = guide_legend(override.aes = list(size = 5))) +
+        theme(legend.title = element_text(size = 7),
+              legend.text  = element_text(size = 7))
+
+state_geog_map
+ggsave(filename="figures/descriptive_maps/state_geog_map.png", plot=state_geog_map, width=10, height=8, units="in", bg='transparent')
+
+## NOAA REGION ONLY MAP
+state_NOAA_geog_map = 
+  base +
+  geom_sf(data = state_NOAA_sf, 
+               aes(fill = Climate_Zone),
+          lwd = 0) +
+  # geom_sf(data = state_NOAA_west_df,
+  #         color = "#66c2a5",
+  #         fill = NA) +
+  # geom_sf(data = state_NOAA_east_df,
+  #         color = "#fc8d62",
+  #         fill = NA) +
+  scale_fill_manual(values = c("#fbb4ae", "#b3cde3","#ccebc5", "#decbe4", "#fed9a6", "#ffffcc", "#e5d8bd", "#fddaec", "#f2f2f2"), 
+                    labels = c("Ohio Valley", 
+                               "Upper Midwest",
+                               "Northeast", 
+                               "Northwest", 
+                               "South",
+                               "Southeast",
+                               "Southwest",
+                               "West",
+                               "Northern Rockies and Plains")) +
+  # scale_colour_manual(values = c("West" = "#66c2a5", 
+  #                                "East" = "#fc8d62"),
+  #                     guide = guide_legend(override.aes = 
+  #                                            list(linetype = c("blank", "solid"), 
+  #                                                              shape = c(16, NA)))) +
+  ggthemes::theme_map() + 
+  theme(legend.title = element_text(hjust = 0.5, face = "bold", size=9),
+        legend.position = "right",
+        axis.text.x = element_blank(), axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        panel.background = element_rect(fill='transparent'),
+        plot.background = element_rect(fill='transparent', color=NA),
+        legend.background = element_rect(fill='transparent'),
+        legend.box.background = element_rect(fill='transparent')) + 
+  guides(fill = guide_legend(title="NOAA Climate Region"),
+         shape = guide_legend(override.aes = list(size = 8)),
+               color = guide_legend(override.aes = list(size = 7)),
+               shape = guide_legend(override.aes = list(size = 5))) +
+        theme(legend.title = element_text(size = 7),
+              legend.text  = element_text(size = 7))
+
+state_NOAA_geog_map
+
+ggsave(filename="figures/descriptive_maps/NOAA_climate_map.png", plot=state_NOAA_geog_map, width=10, height=8, units="in", bg='transparent')
+```
+```{r}
+# combining climate regions
+## ignore the hex color codes on this; we correct it later in the ggmap statement
+state_NOAA_sf_outline = state_NOAA_sf %>%
+  mutate(outline = case_when(
+    Climate_Zone %in% c("West", "Northwest") ~ "#decbe4",
+    Climate_Zone %in% c("Central", "Southeast", "Northeast") ~ "#fbb4ae",
+    Climate_Zone == "East North Central" ~ "#b3cde3",
+    Climate_Zone == "South" ~ "#fed9a6",
+    Climate_Zone == "Southwest" ~ "#e5d8bd",
+    Climate_Zone == "West North Central" ~ "#ccebc5"
+  ))
+
+## map and manually set legend labels
+grouped_NOAA_geog_map = 
+  base +
+  geom_sf(data = state_NOAA_sf_outline, 
+               aes(fill = outline),
+          lwd = 0) +
+  scale_fill_manual(values = c("#decbe4", "#fbb4ae","#b3cde3", "#fed9a6", "#e5d8bd", "#ccebc5"), 
+                    labels = c("Upper Midwest", 
+                               "Northern Rockies and Plains",
+                               "West/Northwest", 
+                               "Southwest", 
+                               "East",
+                               "South")) +
+  # scale_colour_manual(values = c("West" = "#66c2a5", 
+  #                                "East" = "#fc8d62"),
+  #                     guide = guide_legend(override.aes = 
+  #                                            list(linetype = c("blank", "solid"), 
+  #                                                              shape = c(16, NA)))) +
+  ggthemes::theme_map() + 
+  theme(legend.title = element_text(hjust = 0.5, face = "bold", size=9),
+        legend.position = "right",
+        axis.text.x = element_blank(), axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        panel.background = element_rect(fill='transparent'),
+        plot.background = element_rect(fill='transparent', color=NA),
+        legend.background = element_rect(fill='transparent'),
+        legend.box.background = element_rect(fill='transparent')) + 
+  guides(fill = guide_legend(title="Grouped NOAA Climate Region Stratification"),
+         shape = guide_legend(override.aes = list(size = 8)),
+               color = guide_legend(override.aes = list(size = 7)),
+               shape = guide_legend(override.aes = list(size = 5))) +
+        theme(legend.title = element_text(size = 7),
+              legend.text  = element_text(size = 7))
+
+grouped_NOAA_geog_map
+ggsave(filename="figures/descriptive_maps/grouped_NOAA_map.png", plot=grouped_NOAA_geog_map, width=10, height=8, units="in", bg='transparent')
+
+```
+
+```{r NOAA Map with outlines}
+
+ggplot(state_NOAA_sf_outline) +
+  geom_sf(aes(color = outline),
+          fill = "white",
+          size = 10) +
+  scale_fill_identity() +
+  scale_size_identity() +
+  theme_minimal() +
+  ggthemes::theme_map() + 
+  theme(legend.title = element_text(hjust = 0.5, face = "bold", size=9),
+        legend.position = "right",
+        axis.text.x = element_blank(), axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        panel.background = element_rect(fill='transparent'),
+        plot.background = element_rect(fill='transparent', color=NA),
+        legend.background = element_rect(fill='transparent'),
+        legend.box.background = element_rect(fill='transparent')) + 
+  guides(fill = guide_legend(title="NOAA Climate Region"),
+         shape = guide_legend(override.aes = list(size = 8)),
+               color = guide_legend(override.aes = list(size = 7)),
+               shape = guide_legend(override.aes = list(size = 5))) +
+        theme(legend.title = element_text(size = 7),
+              legend.text  = element_text(size = 7))
+
+# map the states as one per climate region (not each state individually)
+## Unionize these states into one for each climate region
+state_NOAA_west_northwest = state_NOAA_sf_outline %>%
+  subset(GEOID %in% c("06", "41", "16", "53", "32")) %>%
+  st_union()
+
+state_NOAA_west_east = state_NOAA_sf_outline %>%
+  subset(Climate_Zone %in% c("Central", "Southeast", "Northeast")) %>%
+  st_union()
+
+state_NOAA_upper_midwest = state_NOAA_sf_outline %>%
+  subset(Climate_Zone == "East North Central") %>%
+  st_union()
+
+state_NOAA_south = state_NOAA_sf_outline %>%
+  subset(Climate_Zone == "South") %>%
+  st_union()
+
+state_NOAA_southwest = state_NOAA_sf_outline %>%
+  subset(Climate_Zone == "Southwest") %>%
+  st_union()
+
+state_NOAA_northern_plains = state_NOAA_sf_outline %>%
+  subset(Climate_Zone == "West North Central") %>%
+  st_union()
+
+# try to map west/northwest region
+  base +
+  geom_sf(data = state_NOAA_sf_outline, 
+               aes(fill = outline),
+          lwd = 0)
+state_NOAA_sf
+state_NOAA_west_northwest
+  ggplot() +
+  geom_sf(data = us_states,
+          color = "black", 
+          fill = "white") + 
+  theme_minimal() + 
+  geom_sf(state_NOAA_west_northwest,
+          aes(color = Climate_Zone),
+          size = 10) +
+  scale_fill_identity() +
+  scale_size_identity() +
+  theme_minimal() +
+  ggthemes::theme_map() + 
+  theme(legend.title = element_text(hjust = 0.5, face = "bold", size=9),
+        legend.position = "right",
+        axis.text.x = element_blank(), axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        panel.background = element_rect(fill='transparent'),
+        plot.background = element_rect(fill='transparent', color=NA),
+        legend.background = element_rect(fill='transparent'),
+        legend.box.background = element_rect(fill='transparent')) + 
+  guides(fill = guide_legend(title="NOAA Climate Region"),
+         shape = guide_legend(override.aes = list(size = 8)),
+               color = guide_legend(override.aes = list(size = 7)),
+               shape = guide_legend(override.aes = list(size = 5))) +
+        theme(legend.title = element_text(size = 7),
+              legend.text  = element_text(size = 7))
+
+```
+
+```{r same code as above chunk but using sf instead of sp}
+
+# get sf files for these East vs West
+library(spData)
+us_states
+
+state_NOAA_west_df = us_states %>%
+  subset(GEOID %in% c("53", "41", "06", "32", "16", "30", "56", "08", "49", "04", "35")) %>%
+  st_union()
+
+state_NOAA_east_df = us_states %>%
+  subset(!GEOID %in% c("53", "41", "06", "32", "16", "30", "56", "08", "49", "04", "35",
+                       "02", "15")) %>% # dont forget to exclude alaska and hawaii
+  st_union()
+
+
+state_NOAA_geog_df =
+  base +
+  # state_fips_NOAA_map +
+  geom_sf(data = state_NOAA_west_df, col = "green", alpha = 0, size = 0.5,
+          fill = NA) +
+  # geom_polygon(data = state_NOAA_west_df, col = "black", fill = "gray", alpha = 0, size = 0.5) +
+  geom_polygon(data = state_NOAA_east_df, col = "red", alpha = 0, size = 0.5)
+
+
+# get sf files continental US
+library(spData)
+us_states
+
+# base map of continental US
+base = ggplot() +
+  geom_sf(data = us_states,
+          color = "black", 
+          fill = "white") + 
+  theme_minimal()
+base
+
+# get state fips codes with their NOAA climate region
+state_NOAA = read_csv("data/covariates.csv") %>% 
+  dplyr::select(State, Climate_Zone) %>% 
+  unique() %>% 
+  mutate(State = as.character(State),
+         State = str_pad(State, 2, pad = "0")) %>% # add leading zero to match GEOID in us_states sf file
+  rename(GEOID = State)
+state_NOAA
+
+state_NOAA_sf = left_join(us_states, state_NOAA)
+
+# get map of NOAA regions
+state_NOAA_map = 
+  base +
+  geom_sf(data = state_NOAA_sf, 
+               aes(fill = Climate_Zone),
+          lwd = 0) +
+  theme_bw() 
+state_NOAA_map
+
+state_NOAA_west_df = state_NOAA_sf %>%
+  subset(GEOID %in% c("53", "41", "06", "32", "16", "30", "56", "08", "49", "04", "35")) %>%
+  st_union()
+
+state_NOAA_east_df = state_NOAA_sf %>%
+  subset(!GEOID %in% c("53", "41", "06", "32", "16", "30", "56", "08", "49", "04", "35")) %>% 
+  st_union()
+
+## EAST AND WEST ONLY MAP
+
+state_geog_map = 
+  base  +
+  geom_sf(data = state_NOAA_west_df,
+          color = "#66c2a5",
+          fill = NA) +
+  geom_sf(data = state_NOAA_east_df,
+          color = "#fc8d62",
+          fill = NA) +
+  # + scale_color_manual(values = c("West" = "red", 
+  #                                "East" = "blue")) +
+  ggthemes::theme_map() +
+  theme(legend.title = element_text(hjust = 0.5, face = "bold", size=9),
+        legend.position = "right",
+        axis.text.x = element_blank(), axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        panel.background = element_rect(fill='transparent'),
+        plot.background = element_rect(fill='transparent', color=NA),
+        legend.background = element_rect(fill='transparent'),
+        legend.box.background = element_rect(fill='transparent')) +
+  guides(shape = guide_legend(override.aes = list(size = 8)),
+               color = guide_legend(override.aes = list(size = 7)),
+               shape = guide_legend(override.aes = list(size = 5))) +
+        theme(legend.title = element_text(size = 7),
+              legend.text  = element_text(size = 7))
+
+state_geog_map
+ggsave(filename="figures/descriptive_maps/state_geog_map.png", plot=state_geog_map, width=10, height=8, units="in", bg='transparent')
+
+## WEST/EAST AND NOAA REGION MAP
+
+state_NOAA_geog_map = 
+  base +
+  geom_sf(data = state_NOAA_sf, 
+               aes(fill = Climate_Zone),
+          lwd = 0) +
+  geom_sf(data = state_NOAA_west_df,
+          color = "#66c2a5",
+          fill = NA) +
+  geom_sf(data = state_NOAA_east_df,
+          color = "#fc8d62",
+          fill = NA) +
+  scale_fill_manual(values = c("#fbb4ae", "#b3cde3","#ccebc5", "#decbe4", "#fed9a6", "#ffffcc", "#e5d8bd", "#fddaec", "#f2f2f2"), 
+                    labels = c("Ohio Valley", 
+                               "Upper Midwest",
+                               "Northeast", 
+                               "Northwest", 
+                               "South",
+                               "Southeast",
+                               "Southwest",
+                               "West",
+                               "Northern Rockies and Plains")) +
+  scale_colour_manual(values = c("West" = "#66c2a5", 
+                                 "East" = "#fc8d62"),
+                      guide = guide_legend(override.aes = 
+                                             list(linetype = c("blank", "solid"), 
+                                                               shape = c(16, NA)))) +
+  ggthemes::theme_map() + 
+  theme(legend.title = element_text(hjust = 0.5, face = "bold", size=9),
+        legend.position = "right",
+        axis.text.x = element_blank(), axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        panel.background = element_rect(fill='transparent'),
+        plot.background = element_rect(fill='transparent', color=NA),
+        legend.background = element_rect(fill='transparent'),
+        legend.box.background = element_rect(fill='transparent')) + 
+  guides(fill = guide_legend(title="NOAA Climate Region"),
+         shape = guide_legend(override.aes = list(size = 8)),
+               color = guide_legend(override.aes = list(size = 7)),
+               shape = guide_legend(override.aes = list(size = 5))) +
+        theme(legend.title = element_text(size = 7),
+              legend.text  = element_text(size = 7))
+
+state_NOAA_geog_map
+
+# ggsave(filename="figures/descriptive_maps/state_NOAA_geog_map.png", plot=state_NOAA_geog_map, width=10, height=8, units="in", bg='transparent')
+
+
+```

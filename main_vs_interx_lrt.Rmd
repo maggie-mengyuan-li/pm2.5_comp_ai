@@ -1,0 +1,79 @@
+---
+title: "LRT between Main and InterX Models"
+author: "Maggie Li (ml4424)"
+date: "2/1/2023"
+output: html_document
+---
+
+```{r load libraries}
+library(tidyverse)
+library(janitor)
+library(stats)
+library(lme4)
+require(lmerTest)
+library(lmtest)
+```
+
+We want to test for each of the 6 components if the estimated county type effect on PM2.5 component (county type main effect + county type:year interaction effect) significantly differs over time. 
+
+We are essentially comparing if β(county type:year 2001) = β(county type:year 2002) = ... = β(county type:year 2017)
+
+To do so, we are running an ANOVA test between the model outputs from the 1) main effects only model and 2) model with county type:year interaction effects (17 dummy variables for each categorical year 2001-2017). 
+
+### ANOVA goodness of fit/LRTs between Main Effects and Interaction Effect Models:
+
+```{r BC}
+bc_main_effects = readRDS("intermediate/model_outputs/main_results/bc_main_effects.rds")
+
+bc_interx = readRDS("intermediate/model_outputs/main_results/bc_interx.rds")
+
+anova(bc_main_effects, bc_interx, test="LRT")
+
+lrtest(bc_main_effects, bc_interx)
+
+```
+
+
+```{r NH4}
+nh4_main_effects = readRDS("intermediate/model_outputs/main_results/nh4_main_effects.rds")
+
+nh4_interx = readRDS("intermediate/model_outputs/main_results/nh4_interx.rds")
+
+anova(nh4_main_effects, nh4_interx, test="LRT")
+lrtest(nh4_main_effects, nh4_interx)
+
+```
+
+```{r NO3}
+no3_main_effects = readRDS("intermediate/model_outputs/main_results/no3_main_effects.rds")
+
+no3_interx = readRDS("intermediate/model_outputs/main_results/no3_interx.rds")
+
+anova(no3_main_effects, no3_interx, test="LRT")
+```
+
+```{r OM}
+om_main_effects = readRDS("intermediate/model_outputs/main_results/om_main_effects.rds")
+
+om_interx = readRDS("intermediate/model_outputs/main_results/om_interx.rds")
+
+anova(om_main_effects, om_interx, test="LRT")
+```
+
+```{r SO4}
+so4_main_effects = readRDS("intermediate/model_outputs/main_results/so4_main_effects.rds")
+
+so4_interx = readRDS("intermediate/model_outputs/main_results/so4_interx.rds")
+
+anova(so4_main_effects, so4_interx, test="LRT")
+```
+
+```{r Soil}
+soil_main_effects = readRDS("intermediate/model_outputs/main_results/soil_main_effects.rds")
+
+soil_interx = readRDS("intermediate/model_outputs/main_results/soil_interx.rds")
+
+anova(soil_main_effects, soil_interx, test="LRT")
+```
+
+Conclusion: there is significant effect modification over time of AI-county type on PM component levels, for all 6 components.

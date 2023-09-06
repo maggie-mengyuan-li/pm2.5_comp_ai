@@ -1,0 +1,430 @@
+---
+title: "Part 5: Descriptive plots showing mean annual SO4, national and by state"
+author: "Maggie Li (ml4424)"
+date: "9/25/2020"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(gridExtra)
+library(grid)
+library(ggplot2)
+library(lattice)
+library(lme4)
+library(gamm4)
+```
+
+
+##  State Line Graphs showing SO4 declines by AI county type: moving averages by state and nationwide, from the raw data and predicted from our statistical models.
+
+10/22 update: plotting adjusted annual declines.
+We are plotting adjusted annual national PM2.5 averages by using our fitted LMER Model 4.
+
+9/25 update: plotting adjusted annual declines (see above for most recent methodology)
+We are plotting adjusted annual national PM2.5 averages by using our fitted LMER Model 3. The estimated values are the y-values predicted from Model 3 "offseted" by adding the model intercept (grand mean PM2.5), and effect of HH income and population density by adding the weighted average beta value for both variables.
+
+### Read in SO4 Data
+
+```{r Create Dataframe of annual mean PM2.5 adjusted in all counties}
+# Read in state FIPS dataset
+state_fips <- read_csv("data/state_fips.csv")
+state_fips <- state_fips %>% dplyr::select(State_Name, State)
+
+# Define subsetted df for native counties (so4) to be used in later chunks for unadjusted line
+# each row is a SO4 concentration estimate for a county for a given study year
+so4.all = read_csv("data/county_concentrations/joined_dta/so4_ai_join.csv")
+so4_ai <- so4.all %>% filter(county_type == 1)
+
+# Join with data to get state acronyms
+so4_ai <- so4_ai %>% 
+  dplyr::select(County, year, so4, State)
+so4_ai$year <- as.factor(so4_ai$year)
+unique(so4_ai$State_Name)
+so4_ai <- so4_ai %>% inner_join(state_fips)
+so4_ai #each row represents a county-year annual concentration
+
+# Define subsetted df for non-native counties (so4) to be used in later chunks for unadjusted line
+nonso4_ai <- so4.all %>% filter(county_type == 0)
+# Join with data to get state acronyms
+nonso4_ai <- nonso4_ai %>% 
+  dplyr::select(County, year, so4, State)
+nonso4_ai$year <- as.factor(nonso4_ai$year)
+unique(nonso4_ai$State_Name)
+nonso4_ai <- nonso4_ai %>% inner_join(state_fips)
+nonso4_ai
+```
+
+```{r Run regression model to get predicted values}
+# Set county type predictor as a factor
+so4.all$county_type <- as.factor(so4.all$county_type)
+
+## Set referent group 
+so4.all$county_type <- relevel(so4.all$county_type, ref = "0")
+
+## Fit linear mixed effect regression model to the data (ref = 0)
+mod.all.so4 <-  gamm4(so4 ~ county_type*as.factor(year) + popd_q + hhinc_q,
+                 random =~(1|State/County),
+                 data = so4.all)
+summary(mod.all.so4$gam)
+```
+
+## Predicting from the mod.all.so4 to get "adjusted" concentrations for descriptive plots
+
+UPDATE 7/25/22: We chose the decile group for ALL counties that overlaps the most with 7th decile of AI-COUNTIES for pop density and hh income. ***USE THIS FOR ADJUSTED PM VALUES DESCRIPTIVE GRAPH***; see bc_descriptive_graphs.Rmd for comparison of the decile groups.
+
+```{r Create df of predictions for 7th decile of AI-counties}
+# Create a df base with study years, county type, and 7th decile of AI-counties to populate with predicted estimates
+pred_df =
+   expand_grid(
+      year = 2000:2017,
+      county_type = c(0,1),
+      popd_q = "(22.4,32.7]",
+      hhinc_q = "(4.03e+04,4.24e+04]"
+   )
+
+## add in pred values
+so4_adj  <- 
+  pred_df %>% 
+   modelr::add_predictions(mod.all.so4$gam)
+
+## ## edit year column to be a factor
+so4_adj$year <- as.factor(so4_adj$year)
+
+## add additional ID column for group aes in ggplot
+so4_adj$State_Name <- "Adjusted Mean (All States)"
+
+##rename pred column to so4 to match unadjusted lines (see below)
+so4_adj <- so4_adj %>% 
+  rename(so4 = pred)
+so4_adj
+
+## AI ADJUSTED so4
+ai_so4_adj <- so4_adj %>% 
+  filter(county_type == 1)
+
+## NON-AI ADJUSTED so4
+nai_so4_adj <- so4_adj %>% 
+  filter(county_type == 0)
+
+ai_so4_adj
+nai_so4_adj
+
+```
+
+Below, we plot the values in a moving average plot separately, before combining them in one plot. The combined plot is what we include in the paper as Supplementary Figure S1.
+
+## Moving average plot for AI-pop counties only (not used in paper)
+
+```{r Calculate avg SO4 for each state and across all states}
+# Unadjusted lines: Aggregate to get an average exposure for each state per year
+native_state_annual_mean <- aggregate(so4~year+State_Name,
+          data=so4_ai,
+          FUN=mean)
+native_state_annual_mean 
+
+#3 year moving avg
+#separate df by state FIPS and rbind back
+state_analysis <- list() #empty list for county
+native_state_exp <- unique(native_state_annual_mean$State_Name)
+native_exp_final <- data.frame() #empty df to rbind list items into
+library(stats)
+for (i in 1:length(native_state_exp)){
+  #separate df by state
+  state_analysis[[i]] <- native_state_annual_mean %>%
+    filter(State_Name == native_state_exp[i])
+  #new col of moving averages
+  state_analysis[[i]] <- state_analysis[[i]] %>%
+    group_by(year) %>%
+    arrange(year) 
+  #new column for moving averages
+  state_analysis[[i]]$movave <- (state_analysis[[i]]$so4 + 
+                                    lag(state_analysis[[i]]$so4) + 
+                                    lag(state_analysis[[i]]$so4,2))/3
+  #fill first year entry with just first year entry
+  state_analysis[[i]][1,"movave"] <- state_analysis[[i]]$so4[1]
+  #fill second year with avg from first and second year
+  state_analysis[[i]][2,"movave"] <- mean(c(state_analysis[[i]]$so4[1],
+                                           state_analysis[[i]]$so4[2]))
+  #rebind df
+  native_exp_final <- do.call(rbind, state_analysis)
+}
+
+native_exp_final 
+# native_exp_final$year <- substr(native_exp_final$year, 3, 4)
+native_exp_final$year <- as.factor(native_exp_final$year)
+#fill in NAs in movave column; have first year be the first year, 2nd year be 2 year moving avg
+native_exp_final$county_type <- "American Indian"
+
+# df for average decline, to join with table
+native_avgdec <- aggregate(so4~year,
+                           data=native_exp_final,
+                           FUN=mean)
+# code moving average column
+native_avgdec$movave <- (native_avgdec$so4 + 
+                                  lag(native_avgdec$so4) + 
+                                  lag(native_avgdec$so4,2))/3
+native_avgdec[1,"movave"] <- native_avgdec$so4[1]
+#fill second year with avg from first and second year
+native_avgdec[2,"movave"] <- mean(c(native_avgdec$so4[1],
+                                    native_avgdec$so4[2]))
+
+# dummy columns
+native_avgdec$State_Name <- "Average Concentration across all States (Unadjusted)"
+native_avgdec$county_type <- "American Indian"
+native_avgdec <- native_avgdec %>% dplyr::select(year, State_Name, so4, movave, county_type)
+
+native_avgdec # nationwide avg across all states for all years
+native_exp_final # avg for each state for all years
+```
+
+```{r Plot all adj and unadj values}
+# PLOT
+so4_ai_timetrend <- ggplot() + 
+  geom_line(data = native_exp_final,
+            aes(x=year, y = so4,
+                group = State_Name, colour= State_Name),
+            color = "grey") + #each line = state mean
+  geom_line(data=native_avgdec,
+            aes(x=year, y=so4,
+                group=State_Name),
+            color="black",
+            size = 1.25) + #unadjusted national mean
+  geom_line(data= ai_so4_adj,
+            aes(x=year, y=so4,
+                group=State_Name),
+            color = "purple",
+            size = 1.25) + #adjusted national mean
+  ylim(0,5) +
+  ylab(expression(paste("Annual Measured ", PM[2.5], " (", mu, "g/", m^3, ")"))) +
+  labs(#title = "AI Populated Counties",
+       x = "Year") + theme_linedraw()  +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  guides(x =  guide_axis(angle = 45)) 
+so4_ai_timetrend
+
+# customlabel inside graph
+grob_so4_ai <- grobTree(textGrob("A", x=0.05,  y=0.9, hjust=0,
+  gp=gpar(fontsize=30)))
+
+# Final Plot & save it
+so4_ai_timetrend  + annotation_custom(grob_so4_ai)
+# ggsave("figures/updated_10.22/so4_ai_states.png")
+```
+
+## Moving average plot for non-AI-pop counties only (not used in paper); basically same code as above
+```{r Calculate avg SO4 for each state and across all states}
+# Aggregate to get an average exposure for each state per year (unadjusted)
+nonnative_state_annual_mean <- aggregate(so4~year+State_Name,
+          data=nonso4_ai,
+          FUN=mean)
+nonnative_state_annual_mean
+
+#3 year moving avg
+#separate df by state FIPS and rbind back
+state_analysis <- list() #empty list for county
+nonnative_state_exp <- unique(nonnative_state_annual_mean$State_Name)
+nonnative_exp_final <- data.frame() #empty df to rbind list items into
+library(stats)
+for (i in 1:length(nonnative_state_exp)){
+  #separate df by state
+  state_analysis[[i]] <- nonnative_state_annual_mean %>%
+    filter(State_Name == nonnative_state_exp[i])
+  #new col of moving averages
+  state_analysis[[i]] <- state_analysis[[i]] %>%
+    group_by(year) %>%
+    arrange(year) 
+  #new column for moving averages
+  state_analysis[[i]]$movave <- (state_analysis[[i]]$so4 + 
+                                    lag(state_analysis[[i]]$so4) + 
+                                    lag(state_analysis[[i]]$so4,2))/3
+  #fill first year entry with just first year entry
+  state_analysis[[i]][1,"movave"] <- state_analysis[[i]]$so4[1]
+  #fill second year with avg from first and second year
+  state_analysis[[i]][2,"movave"] <- mean(c(state_analysis[[i]]$so4[1],
+                                           state_analysis[[i]]$so4[2]))
+  #rebind df
+  nonnative_exp_final <- do.call(rbind, state_analysis)
+}
+
+nonnative_exp_final 
+# nonnative_exp_final$year <- substr(nonnative_exp_final$year, 3, 4)
+nonnative_exp_final$year <- as.factor(nonnative_exp_final$year)
+#fill in NAs in movave column; have first year be the first year, 2nd year be 2 year moving avg
+nonnative_exp_final$county_type <- "Non-American Indian"
+nonnative_exp_final
+# df for average decline, to join with table
+nonnative_avgdec <- aggregate(so4~year,
+          data=nonnative_exp_final,
+          FUN=mean)
+nonnative_avgdec$movave <- (nonnative_avgdec$so4 + 
+                                  lag(nonnative_avgdec$so4) + 
+                                  lag(nonnative_avgdec$so4,2))/3
+nonnative_avgdec[1,"movave"] <- nonnative_avgdec$so4[1]
+#fill second year with avg from first and second year
+nonnative_avgdec[2,"movave"] <- mean(c(nonnative_avgdec$so4[1],
+                                    nonnative_avgdec$so4[2]))
+
+# dummy columns
+nonnative_avgdec$State_Name <- "Average Concentration across all States (Unadjusted)"
+nonnative_avgdec$county_type <- "Non-American Indian"
+nonnative_avgdec <- nonnative_avgdec %>% dplyr::select(year, State_Name, so4, movave, county_type)
+nonnative_avgdec
+```
+
+```{r Plot all adj and unadj values}
+so4_nai_timetrend <- ggplot() + 
+  geom_line(data = nonnative_exp_final,
+            aes(x=year, y = so4,
+                group = State_Name),
+            color = "grey") + #unadjusted means by state
+  geom_line(data=nonnative_avgdec,
+            aes(x=year, y=so4,
+                group=State_Name),
+            color="black",
+            size = 1.25) + #unadjusted national mean
+  geom_line(data= nai_so4_adj,
+            aes(x=year, y=so4,
+                group=State_Name),
+            color = "purple",
+            size = 1.25) + #adjusted national mean
+  ylim(0, 5) +
+  ylab(expression(paste("Annual Measured ", PM[2.5], " (", mu, "g/", m^3, ")"))) +
+  labs(#title = "Non-AI Populated Counties",
+       x = "Year") + theme_linedraw() +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  guides(x =  guide_axis(angle = 45)) 
+so4_nai_timetrend 
+
+# 9/7 for paper
+# customlabel inside graph
+grob_nai_so4 <- grobTree(textGrob("B", x=0.05,  y=0.9, hjust=0,gp=gpar(fontsize=30)))
+
+# Plot & save
+so4_nai_timetrend + annotation_custom(grob_nai_so4)
+# ggsave("figures/updated_10.22/so4_nai_states.png")
+
+```
+
+#### Combine AI and non-AI in one graph (Supplementary Figure S1)
+
+```{r combined graph}
+## AI lines = teal
+## Non-AI lines = beige
+
+so4_combined <- ggplot() + 
+  geom_line(data = native_exp_final,
+            aes(x=year, y = so4,
+                group = State_Name, colour= State_Name),
+            color = "#c7eae5") + #each line = state mean
+  geom_line(data = nonnative_exp_final,
+            aes(x=year, y = so4,
+                group = State_Name),
+            color = "#f6e8c3") + #unadjusted means by state
+  geom_line(data=native_avgdec,
+            aes(x=year, y=so4,
+                group=State_Name),
+            color="#5ab4ac", linetype = "dashed",
+            size = 1.25) + #unadjusted national mean (dashed)
+  geom_line(data=nonnative_avgdec,
+            aes(x=year, y=so4,
+                group=State_Name),
+            color="#d8b365", linetype = "dashed",
+            size = 1.25) + #unadjusted national mean
+  geom_line(data= ai_so4_adj,
+            aes(x=year, y=so4,
+                group=State_Name),
+            color = "#01665e",
+            size = 1.25) + #adjusted national mean
+  geom_line(data= nai_so4_adj,
+            aes(x=year, y=so4,
+                group=State_Name),
+            color = "#8c510a",
+            size = 1.25) + #adjusted national mean
+  ylim(0, 5.5) +
+  ylab(expression(paste("Annual Mean ", "SO"[4]^"2-", " (", mu, "g/", m^3, ")"))) + #dont need to specify model/measured, gonna do so w/ grob
+  labs(x = "Year") + theme_linedraw() +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  guides(x =  guide_axis(angle = 45))
+so4_combined
+
+# Plot & save
+so4_combined
+# ggsave("figures/descriptive_graphs/so4_trend.png")
+
+```
+
+```{r Layered graphs for seminar presentation 2/1/2021}
+# ALL STATE LINES ONLY
+so4_statesonly <- ggplot() + 
+  geom_line(data = native_exp_final,
+            aes(x=year, y = so4,
+                group = State_Name, colour= State_Name),
+            color = "#c7eae5") + #each line = state mean
+  geom_line(data = nonnative_exp_final,
+            aes(x=year, y = so4,
+                group = State_Name),
+            color = "#f6e8c3") + #unadjusted means by state
+  ylim(0, 20) +
+  ylab(expression(paste("Annual Mean ", PM[2.5], " (", mu, "g/", m^3, ")"))) + #dont need to specify model/measured, gonna do so w/ grob
+  labs(x = "Year") + theme_linedraw() +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  guides(x =  guide_axis(angle = 45)) +
+  geom_hline(yintercept=12, linetype="solid", color = "red")
+so4_statesonly
+
+# add caption/title (data source)
+# so4_statesonly + annotation_custom(grob_so4_data)
+# ggsave("presentations/layering_trends/so4_only_states.png")
+
+# UNADJUSTED NATIONAL MEANS WITH ALL STATES
+so4_unadj <- ggplot() + 
+  geom_line(data = native_exp_final,
+            aes(x=year, y = so4,
+                group = State_Name, colour= State_Name),
+            color = "#c7eae5") + #each line = state mean
+  geom_line(data = nonnative_exp_final,
+            aes(x=year, y = so4,
+                group = State_Name),
+            color = "#f6e8c3") + #unadjusted means by state
+  geom_line(data=native_avgdec,
+            aes(x=year, y=so4,
+                group=State_Name),
+            color="#5ab4ac", linetype = "dashed",
+            size = 1.25) + #unadjusted national mean (dashed)
+  geom_line(data=nonnative_avgdec,
+            aes(x=year, y=so4,
+                group=State_Name),
+            color="#d8b365", linetype = "dashed",
+            size = 1.25) + #unadjusted national mean
+  ylim(0, 5) +
+  ylab(expression(paste("Annual Mean ", "SO"[4]^"2-", " (", mu, "g/", m^3, ")"))) + #dont need to specify model/measured, gonna do so w/ grob
+  labs(x = "Year") + theme_linedraw() +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  guides(x =  guide_axis(angle = 45)) 
+so4_unadj
+
+# # add caption/title (data source)
+# so4_unadj + annotation_custom(grob_so4_data)
+# ggsave("figures/descriptive_graphs/so4_unadj.png")
+# 
+# # FULL GRAPH WITH ALL THE LINES
+# so4_combined + annotation_custom(grob_so4_data)
+# ggsave("presentations/layering_trends/so4_full.png") 
+```
+

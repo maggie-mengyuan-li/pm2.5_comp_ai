@@ -1,0 +1,841 @@
+---
+title: "BC Analysis"
+author: "Maggie Li (ml4424)"
+date: "4/8/2021"
+output: html_document
+---
+
+```{r load libraries}
+library(tidyverse)
+library(janitor)
+library(stats)
+library(lme4)
+library(raster)
+library(sf)
+library(usmap)
+library(tictoc)
+require(lmerTest)
+library(ncdf4)
+```
+
+
+# Aim 1: Compare county-level PM2.5 component concentrations between AI and non-AI-populated counties
+
+```{r read in file with county type defined for each 3109 study counties}
+ai_county_fips = read_csv("data/ai_counties.csv") 
+
+nai_county_fips = read_csv("data/nai_counties.csv") 
+```
+
+## Extract county-level BC concentrations for 2000-2017
+
+Data Source: Randall Martin's PM2.5 Model https://sites.wustl.edu/acag/datasets/surface-pm2-5/ 
+Note: The raw data show the proportion of each component, so have to multiply it by the total PM concentration that year
+
+For Vivian: The next 2 code chunks will take a while to run, especially looping through all years. If it's too much, you can run just one year or a few; the outputted datasets are already in the folders indicated by write_csv.
+
+```{r read and extract county level BC for 2000 2001 2017 only}
+# read in all counties shapefile
+counties_shp <- "data/cb_2018_us_county_500k/cb_2018_us_county_500k.shp"
+all_counties <- st_read(counties_shp, stringsAsFactors = FALSE)
+
+# group all_counties by state fips, exclude territories and hawaii and alaska
+all_counties <- all_counties %>% arrange(STATEFP) %>%
+  filter(STATEFP != "02",
+         STATEFP != "15",
+         STATEFP <= "56")
+unique(all_counties$STATEFP)
+all_counties
+
+# each state's fips code in a vector
+state_fips <- fips(state.name, county = c())
+
+# remove hawaii and alaska (FIPS are 15 and 02)
+state_fips <- state_fips[!(state_fips %in% c("02","15"))]
+
+# save each state's counties as separate sf's, in a list. the function below will iterate through all of these states.
+state_list <- list(length(state_fips)) # create list of length 48
+for (i in 1:length(state_fips)){
+  state_list[[i]] <- all_counties %>%
+    filter(STATEFP==state_fips[i])
+}
+# state_list # each list value = one state; includes polygon counties in that state; 48 states total
+
+# read in ncdf as raster stack for BC in 2000, 2017
+bc_2000 = raster("data/raw_components/bc/bc_2000.nc")
+bc_2017 = raster("data/raw_components/bc/bc_2017.nc")
+bc_2000 = stack(bc_2000)
+bc_2017 = stack(bc_2017)
+
+# read in ncdf as raster stack for total PM in 2000, 2017
+pm_2000 = raster("data/raw_components/total_pm/pm_2000.nc")
+pm_2017 = raster("data/raw_components/total_pm/pm_2017.nc")
+pm_2000 = stack(pm_2000)
+pm_2017 = stack(pm_2017)
+
+# get the actual raster matrix for BC through multiplying percentage with total PM
+bc_actual_2000 = (bc_2000*pm_2000)/100
+mean(getValues(bc_actual_2000), na.rm = T)
+
+bc_actual_2017 = (bc_2017*pm_2017)/100
+mean(getValues(bc_actual_2017), na.rm = T)
+
+# create empty lists to save dfs into
+bc_2000_list = list()
+bc_2017_list = list()
+
+# view values for 2017
+raster::extract(bc_2017, state_list[[1]], fun=mean, na.rm=TRUE, df=TRUE)
+mean(getValues(bc_2017), na.rm = T)
+
+# write loop to extract county BC levels for 2000: this will take a while to run
+
+tic() # tictoc helps record the time it takes to run things in R
+for (i in 1:48){ # 48 states total FIPS = 01 (AL), 04 (AZ)
+  bc_2000_list[[i]] <- raster::extract(bc_actual_2000,
+                                       state_list[[i]],
+                                       fun=mean, na.rm=TRUE, df=TRUE) #specify function = mean to extract mean concentrations
+  bc_2000_list[[i]]$County <- state_list[[i]]$COUNTYFP
+  bc_2000_list[[i]]$State <- state_fips[i]
+  bc_2000_list[[i]]$FIPS <- paste(bc_2000_list[[i]]$State,
+                                  bc_2000_list[[i]]$County)
+  bc_2000_list[[i]]$FIPS <- str_replace_all(bc_2000_list[[i]]$FIPS, " ", "")}
+
+toc()
+
+# PM25 for each county should be saved now in the previously empty list
+# (each list item = one state, each row = county within that state)
+bc_2000_list[[1]]
+bc_2000_df = do.call(rbind, bc_2000_list)
+# write out dataset to intermediate comp_concentrations folder
+write_csv(bc_2000_df,
+          "data/comp_concentrations/bc/bc_2000_df.csv")
+
+# read in ncdf as raster stack for BC in 2001
+bc_2001 = raster("data/raw_components/bc/bc_2001.nc")
+bc_2001 = stack(bc_2001)
+
+
+# read in ncdf as raster stack for total PM in 2001
+pm_2001 = raster("data/raw_components/total_pm/pm_2001.nc")
+pm_2001 = stack(pm_2001)
+
+# get the actual raster matrix for BC through multiplying percentage with total PM
+bc_actual_2001 = (bc_2001*pm_2001)/100
+mean(getValues(bc_actual_2001), na.rm = T) # average county mean
+
+# create empty lists to save dfs into
+bc_2001_list = list()
+
+# write loop to extract county BC levels for 2001: this will take a while to run
+
+tic() # tictoc helps record the time it takes to run things in R
+for (i in 1:48){ # 48 states total FIPS = 01 (AL), 04 (AZ)
+  bc_2001_list[[i]] <- raster::extract(bc_actual_2001,
+                                       state_list[[i]],
+                                       fun=mean, na.rm=TRUE, df=TRUE) #specify function = mean to extract mean concentrations
+  bc_2001_list[[i]]$County <- state_list[[i]]$COUNTYFP
+  bc_2001_list[[i]]$State <- state_fips[i]
+  bc_2001_list[[i]]$FIPS <- paste(bc_2001_list[[i]]$State,
+                                  bc_2001_list[[i]]$County)
+  bc_2001_list[[i]]$FIPS <- str_replace_all(bc_2001_list[[i]]$FIPS, " ", "")}
+
+toc()
+
+# PM25 for each county should be saved now in the previously empty list
+# (each list item = one state, each row = county within that state)
+bc_2001_list[[1]]
+bc_2001_df = do.call(rbind, bc_2001_list)
+write_csv(bc_2001_df,
+          "data/comp_concentrations/bc/bc_2001_df.csv")
+
+# write loop to extract county BC levels for 2017: this will take a while to run
+
+tic() # tictoc helps record the time it takes to run things in R
+for (i in 1:48){ # 48 states total FIPS = 01 (AL), 04 (AZ)
+  bc_2017_list[[i]] <- raster::extract(bc_actual_2017,
+                                       state_list[[i]],
+                                       fun=mean, na.rm=TRUE, df=TRUE) #specify function = mean to extract mean concentrations
+  bc_2017_list[[i]]$County <- state_list[[i]]$COUNTYFP
+  bc_2017_list[[i]]$State <- state_fips[i]
+  bc_2017_list[[i]]$FIPS <- paste(bc_2017_list[[i]]$State,
+                                  bc_2017_list[[i]]$County)
+  bc_2017_list[[i]]$FIPS <- str_replace_all(bc_2017_list[[i]]$FIPS, " ", "")}
+
+toc()
+
+# PM25 for each county should be saved now in the previously empty list
+# (each list item = one state, each row = county within that state)
+bc_2017_list[[1]]
+bc_2017_df = do.call(rbind, bc_2017_list)
+write_csv(bc_2017_df,
+          "data/bc_2017_df.csv")
+```
+
+```{r run loop to read in and get BC data all years}
+# Loop from 2001-2017
+bc_years = c("bc_2000", "bc_2001","bc_2002", "bc_2003", "bc_2004", "bc_2005",
+             "bc_2006", "bc_2007", "bc_2008", "bc_2009",
+             "bc_2010", "bc_2011", "bc_2012", "bc_2013",
+             "bc_2014", "bc_2015", "bc_2016", "bc_2017")
+
+pm_years = c("pm_2000", "pm_2001", "pm_2002", "pm_2003", "pm_2004", "pm_2005",
+             "pm_2006", "pm_2007", "pm_2008", "pm_2009",
+             "pm_2010", "pm_2011", "pm_2012", "pm_2013",
+             "pm_2014", "pm_2015", "pm_2016", "pm_2017")
+
+# Extract Data for DC
+## Note: we have to extract concentrations in DC separately,  because DC was not a state in the state_list sf file.
+## create a df just DC all years, join with the existing components_year_df files in data/county_concentrations
+DC_state_list <- all_counties %>%
+    filter(STATEFP== "11")
+
+# create empty list to save DC PM data into; (each list element is 1 df with one row, for the DC estimate that year.)
+bc_dc_list = list()
+
+# count variable for year to name saved out df
+year = 2000
+## Run loop for 2000 through 2017
+for (i in 1:18){
+  # read in ncdf as raster stack for bcs
+  bc_year = raster(paste("data/raw_components/bc/", bc_years[i], ".nc", sep = ""))
+  bc_year = stack(bc_year)
+
+
+  # read in ncdf as raster stack for total PM in 2001
+  pm_year = raster(paste("data/raw_components/total_pm/", pm_years[i], ".nc", sep = ""))
+  pm_year = stack(pm_year)
+
+  # get the actual raster matrix for BC through multiplying percentage with total PM
+  bc_actual_year = (bc_year*pm_year)/100
+  mean(getValues(bc_actual_year), na.rm = T) # average county mean
+
+# extract data for just DC (fips = 11)
+  bc_dc_list[[i]] <- raster::extract(bc_actual_year,
+                            DC_state_list,
+                            fun=mean, na.rm=TRUE, df=TRUE) %>% # specify function = mean to extract mean concentrations
+    mutate(year = year) %>%
+    dplyr::rename(FIPS = ID) %>%
+    dplyr::rename(bc = layer) %>%
+    mutate(State = 11) %>%
+    mutate(FIPS = 11001)
+  bc_dc_list[[i]]$County <- "001"
+  year = year + 1
+
+
+}
+toc()
+bc_dc_list
+bc_dc = do.call(rbind, bc_dc_list)
+bc_dc
+
+
+tic()
+
+## count variable for year to name saved out df
+year = 2000
+
+## Run loop for 2000 through 2017
+for (i in 1:18){
+  # read in ncdf as raster stack for bcs
+  bc_year = raster(paste("data/raw_components/bc/", bc_years[i], ".nc", sep = ""))
+  bc_year = stack(bc_year)
+
+
+  # read in ncdf as raster stack for total PM in 2001
+  pm_year = raster(paste("data/raw_components/total_pm/", pm_years[i], ".nc", sep = ""))
+  pm_year = stack(pm_year)
+
+  # get the actual raster matrix for BC through multiplying percentage with total PM
+  bc_actual_year = (bc_year*pm_year)/100
+  mean(getValues(bc_actual_year), na.rm = T) # average county mean
+
+  # create empty lists to save dfs into
+  bc_year_list = list()
+
+  # write loop to extract county BC levels for all states in given year: this will take a while to run
+
+  tic() # tictoc helps record the time it takes to run things in R
+  for (i in 1:48){ # 48 contiguous states total FIPS = 01 (AL), 04 (AZ)
+    bc_year_list[[i]] <- raster::extract(bc_actual_year,
+                                         state_list[[i]],
+                                         fun=mean, na.rm=TRUE, df=TRUE) #specify function = mean to extract mean concentrations
+    bc_year_list[[i]]$County <- state_list[[i]]$COUNTYFP
+    bc_year_list[[i]]$State <- state_fips[i]
+    bc_year_list[[i]]$FIPS <- paste(bc_year_list[[i]]$State,
+                                    bc_year_list[[i]]$County)
+    bc_year_list[[i]]$FIPS <- str_replace_all(bc_year_list[[i]]$FIPS, " ", "")}
+
+  toc()
+
+  # PM25 for each county should be saved now in the previously empty list
+  # (each list item = one state, each row = county within that state)
+  bc_year_df = do.call(rbind, bc_year_list)
+  write_csv(bc_year_df,
+            paste("data/county_concentrations/bc/bc_", year, "_df.csv", sep = ""))
+  year = year + 1
+}
+toc()
+```
+
+
+```{r combine all years into one df}
+# Read in model data into list of length 19 (# study years)
+bc_allyrs <- list()
+yr = 2000
+for (i in 1:18){
+  bc_allyrs[[i]] <- read_csv(file = paste('data/county_concentrations/bc/bc_',
+                                           yr, '_df.csv', sep = '')) %>%
+    dplyr::rename(bc = layer) %>% # rename "layer" column to specify component (BC)
+    mutate(year = yr) # add column for year
+  yr <- yr + 1
+}
+
+bc_allyrs = do.call(rbind, bc_allyrs) # join list into one df
+
+# UPDATE: join with DC data
+bc_allyrs = bc_allyrs %>% dplyr::select(-ID)
+bc_allyrs = rbind(bc_allyrs, bc_dc)
+
+summary(bc_allyrs)
+length(unique(bc_allyrs$FIPS))
+
+# write out Final joined dataset w/ 48 states + DC
+write_csv(bc_allyrs, "data/county_concentrations/allyrs/bc_allyrs.csv")
+
+```
+
+## Assign BC estimates to AI vs non-AI counties-- 
+
+Note to Vivian: You can use the pre-generated data (since the 3 code chunks above extract the county-level estimates)
+
+```{r join layer to AI county}
+bc_allyrs = read_csv("data/county_concentrations/allyrs/bc_allyrs.csv")
+
+all_county_types = rbind(ai_county_fips, nai_county_fips) %>% 
+  rename(FIPS = County)
+
+bc_ai_join = left_join(bc_allyrs, all_county_types) %>% 
+  dplyr::select(FIPS, bc, year, county_type) %>% 
+  rename(County = FIPS) %>% 
+  mutate(county_type = replace_na(county_type, 1)) ## county FIPS 46102 is showing up as an NA
+  
+bc_ai_join
+
+```
+
+```{r join with covariates}
+covariates = read_csv("data/covariates.csv")
+summary(covariates)
+bc_ai_join = bc_ai_join %>% 
+  left_join(covariates)
+bc_ai_join
+
+# Compare summaries in all counties, AI, non-AI
+summary(bc_ai_join)
+summary(bc_ai_join %>% filter(county_type == 1))
+summary(bc_ai_join %>% filter(county_type == 0))
+
+# note higher median/mean levels in nAI counties (unadjusted)
+```
+
+```{r add columns for deciles}
+# Split population density and hhincome into deciles for model
+bc_ai_join$popd_q <- cut(bc_ai_join$pop_density, 
+                         quantile(bc_ai_join$pop_density, seq(0,1,0.1)), 
+                         include.lowest = TRUE)
+bc_ai_join$hhinc_q <- cut(bc_ai_join$hh_income, 
+                          quantile(bc_ai_join$hh_income, seq(0,1,0.1)), 
+                          include.lowest = TRUE)
+sum(table(bc_ai_join$popd_q, exclude = NULL)) == dim(bc_ai_join)[1]
+bc_ai_join
+```
+```{r boxplot of BC distribution by AI county type}
+## distribution of BC by county type
+boxplot(bc~county_type,data=bc_ai_join, main="BC by AI-pop county type",
+   xlab="County Type", ylab="BC (μg/m3)")
+
+  # set referent for df
+bc_ai_join = bc_ai_join %>% 
+  mutate(county_type = factor(county_type)) %>% 
+  mutate(county_type = relevel(county_type, ref="0"))
+
+## Save out dataframe 
+write_csv(bc_ai_join,
+          "data/county_concentrations/joined_dta/bc_ai_join.csv")
+```
+
+## Run statistical models;
+```{r Run lmer models}
+# unadjusted
+bc_unadj = lmer(bc ~ county_type + as.factor(year) +
+                    (1|State/County),
+                  data = bc_ai_join)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(bc_unadj)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(bc_unadj)$coefficients[2,1] - 1.96*summary(bc_unadj)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(bc_unadj)$coefficients[2,1] + 1.96*summary(bc_unadj)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+paste(summary(bc_unadj)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(bc_unadj)$coefficients[2,1] - 1.96*summary(bc_unadj)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(bc_unadj)$coefficients[2,1] + 1.96*summary(bc_unadj)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# additionally adjusted for popd
+bc_partial = lmer(bc ~ county_type + as.factor(year) +
+                  popd_q +
+                  (1|State/County),
+                data = bc_ai_join)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(bc_partial)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(bc_partial)$coefficients[2,1] - 1.96*summary(bc_partial)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(bc_partial)$coefficients[2,1] + 1.96*summary(bc_partial)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+paste(summary(bc_partial)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(bc_partial)$coefficients[2,1] - 1.96*summary(bc_partial)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(bc_partial)$coefficients[2,1] + 1.96*summary(bc_partial)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# full adj model
+bc_full = lmer(bc ~ county_type + as.factor(year) +
+                    popd_q + 
+                    hhinc_q +
+                    (1|State/County),
+                  data = bc_ai_join, REML=FALSE)
+
+## 95% CI: point estimate, LL, UL
+paste(summary(bc_full)$coefficients[2,1] %>% round(digits = 3),
+      " (",
+      round(summary(bc_full)$coefficients[2,1] - 1.96*summary(bc_full)$coefficients[2,2], digits = 3),
+      ", ",
+      round(summary(bc_full)$coefficients[2,1] + 1.96*summary(bc_full)$coefficients[2,2], digits = 3),
+      ")", sep = "")
+paste(summary(bc_full)$coefficients[2,1] %>% round(digits = 2),
+      " (",
+      round(summary(bc_full)$coefficients[2,1] - 1.96*summary(bc_full)$coefficients[2,2], digits = 2),
+      ", ",
+      round(summary(bc_full)$coefficients[2,1] + 1.96*summary(bc_full)$coefficients[2,2], digits = 2),
+      ")", sep = "")
+
+# fully adjusted with interaction term for year
+bc_full_interx = lmer(bc ~ county_type + as.factor(year) +
+                    popd_q + 
+                    hhinc_q +
+                    county_type*as.factor(year) +
+                    (1|State/County),
+                  data = bc_ai_join, REML=FALSE)
+summary(bc_full_interx)
+```
+
+```{r Save out results from main effects only model and interx effects model}
+
+## save model output for main effects only model
+saveRDS(bc_full,
+        file = "intermediate/model_outputs/main_results/bc_main_effects.rds")
+## save model output for main effects only model
+saveRDS(bc_full_interx,
+        file = "intermediate/model_outputs/main_results/bc_interx.rds")
+
+```
+
+
+```{r InterX plot from lmer}
+# create vcov matrix of main effects and interX
+
+# extract vcov matrix of the county type main effect and interaction effect for each categorical year
+native_yr_vcov <- vcov(bc_full_interx)[c(2,seq(38,54)), c(2,seq(38,54))]
+
+# calculate all the variances for all the years i.e. var(x+y); should be 19 total entries --> var_vector
+# var_vector should be the same repeating value (from the diagonal of the vcov matrix above)
+var_vector = c()
+for (i in 2:18){
+  var_vector[1] <- native_yr_vcov[1,1]
+  var_vector[i] <- native_yr_vcov[1,1] + native_yr_vcov[i,i] + 2 * native_yr_vcov[i,1]
+}
+var_vector
+sd_vector <- sqrt(var_vector)
+length(sd_vector)
+#matrix with 19 cols for 19 years, three rows: one for effect estimate of total effect per year (total effect = main effect + interx effect), one for CI lower, one for CI upper
+bc_decline <- data.frame()
+bc_decline[1,1] <- summary(bc_full_interx)$coefficients[2,1]
+bc_decline[1,2] <- summary(bc_full_interx)$coefficients[2,1] - 1.96*sd_vector[1]
+bc_decline[1,3] <- summary(bc_full_interx)$coefficients[2,1] + 1.96*sd_vector[1]
+
+# fill in matrix thru loop for every following year
+yr_ct <- 38
+for (i in 2:18){
+  bc_decline[i,1] <- summary(bc_full_interx)$coefficients[2,1]+
+    summary(bc_full_interx)$coefficients[yr_ct,1]
+  
+  bc_decline[i,2] <- summary(bc_full_interx)$coefficients[2,1]+
+    summary(bc_full_interx)$coefficients[yr_ct,1] - 1.96*sd_vector[i]
+  
+  bc_decline[i,3] <- summary(bc_full_interx)$coefficients[2,1]+
+    summary(bc_full_interx)$coefficients[yr_ct,1] + 1.96*sd_vector[i]
+  yr_ct <- yr_ct + 1
+}
+
+bc_decline
+
+colnames(bc_decline) <- c('estimate', 'cl_lower', 'cl_upper') # set col names
+
+bc_decline$year <- seq(2000, 2017) # column for year
+
+
+#PLOT OF TOTAL EFFECT OF NATIVE OVER TIME; updated 12/14 to be consistent with Figure 3 layout (slanted x-axis label)
+bc_interx_plot <- ggplot() + 
+  theme_linedraw() + 
+  geom_line(data = bc_decline,
+            aes(x=year, y = estimate)) +
+  geom_line(data=bc_decline,
+            aes(x=year, y=cl_lower), linetype = "dashed") +
+  geom_line(data=bc_decline,
+            aes(x=year, y=cl_upper), linetype = "dashed") +
+  ylim(-0.6, 0.6) +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in BC (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank(),
+        panel.background = element_rect(fill='transparent'), 
+        plot.background = element_rect(fill='transparent', color=NA)) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) + 
+  geom_hline(yintercept=0, linetype="solid", color = "red")
+bc_interx_plot
+ggsave("figures/effectmod_plots/main/bc.png", width = 6, height = 4, dpi = 300,
+       bg='transparent')
+
+```
+
+To Vivian: We also tried running smoothed BC trends over time by county type (https://fromthebottomoftheheap.net/2017/10/10/difference-splines-i/)
+
+Given similarities with the linear models, we did not choose to include them in our paper, opting instead for the GLMM results above. You can run the below to check it out if you wish to.
+
+```{r Smooth interX model with time 10 knots}
+# using splines
+library(splines)
+library(mgcv)
+library(gamm4)
+library(reshape2)
+bc_full_interx_smooth = gamm4(bc ~ s(year, by = county_type, k = 10) + # specify k knots
+                    county_type + 
+                      popd_q + 
+                    hhinc_q,
+                    random = ~(1|State/County),
+                  data =  bc_ai_join)
+summary(bc_full_interx_smooth)
+summary(bc_full_interx_smooth$gam)
+
+# view smooth plots for county type = 0 and 1
+plot(bc_full_interx_smooth$gam, pages = 1)
+
+# empty df for predicted values from gam; decile of popd and hhinc correspond to most common quantile for non-AI pop counties 
+pdat = expand.grid(year = seq(2000, 2017, length = 170), # length = 170 predicts 10 values per year (200-2016)
+                    county_type = c(0, 1),
+                   popd_q = "(160,382]",
+                   hhinc_q = "(5.75e+04,1.16e+05]")
+
+# add in predicted values, get difference for each year and plot; is ggplot smooth adequate?
+pdat %>%
+  modelr::add_predictions(bc_full_interx_smooth$gam) %>%
+  dcast(year ~ county_type, value.var = "pred", fill = 0) %>%
+  mutate(diff = `1` - `0`) %>%
+  ggplot(aes(x = year, y = diff)) +
+           geom_line()
+
+# add in predicted values from gam
+xp <- predict(bc_full_interx_smooth$gam, newdata = pdat, type = 'lpmatrix')
+xp
+
+## which cols of xp relate to splines of interest?
+c1 <- grepl('1', colnames(xp))
+c2 <- grepl('0', colnames(xp))
+## which rows of xp relate to sites of interest?
+r1 <- with(pdat, county_type == '1')
+r2 <- with(pdat, county_type == '0')
+
+## difference rows of xp for data from comparison
+X <- xp[r1, ] - xp[r2, ]
+## zero out cols of X related to splines for other lochs
+X[, ! (c1 | c2)] <- 0
+## zero out the parametric cols
+X[, !grepl('^s\\(', colnames(xp))] <- 0
+#extract betas
+dif <- X %*% coef(bc_full_interx_smooth$gam)
+#extract se
+se <- sqrt(rowSums((X %*% vcov(bc_full_interx_smooth$gam)) * X))
+#calculate CI
+crit <- qt(.975, df.residual(bc_full_interx_smooth$gam))
+upr <- dif + (crit * se)
+lwr <- dif - (crit * se)
+
+# function to do it all in 1
+smooth_diff <- function(model, newdata, f1, f2, var, alpha = 0.05,
+                        unconditional = FALSE) {
+    xp <- predict(model, newdata = newdata, type = 'lpmatrix')
+    c1 <- grepl(f1, colnames(xp))
+    c2 <- grepl(f2, colnames(xp))
+    r1 <- newdata[[var]] == f1
+    r2 <- newdata[[var]] == f2
+    ## difference rows of xp for data from comparison
+    X <- xp[r1, ] - xp[r2, ]
+    ## zero out cols of X related to splines for other lochs
+    X[, ! (c1 | c2)] <- 0
+    ## zero out the parametric cols
+    X[, !grepl('^s\\(', colnames(xp))] <- 0
+    dif <- X %*% coef(model)
+    se <- sqrt(rowSums((X %*% vcov(model, unconditional = unconditional)) * X))
+    crit <- qt(alpha/2, df.residual(model), lower.tail = FALSE)
+    upr <- dif + (crit * se)
+    lwr <- dif - (crit * se)
+    data.frame(pair = paste(f1, f2, sep = '-'),
+               diff = dif,
+               se = se,
+               upper = upr,
+               lower = lwr)
+}
+
+comp1 <- smooth_diff(bc_full_interx_smooth$gam, pdat, '1', '0', 'county_type')
+comp <- cbind(year = seq(2000, 2017, length = 170),
+              rbind(comp1))
+
+comp
+
+# plot smoothed difference
+ggplot(comp, aes(x = year, y = diff, group = pair)) +
+    geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+    geom_line() +
+  labs(x = "Year",
+       y = expression(paste("Mean Difference in BC (", mu, "g/", m^3, ")")),
+       fill = "County Type") +
+  theme(plot.title = element_text(size = 18),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        axis.title.x=element_blank()) +
+  scale_x_continuous(breaks = seq(2000,2017,1), expand = c(0, 0)) +
+  guides(x =  guide_axis(angle = 45)) +
+  ylim(-0.11, 0.1) +
+  geom_hline(yintercept=0, linetype="solid", color = "red") +
+  theme_linedraw()
+
+# Plot difference in splines by county type using add_predictions only
+pdat %>%
+  modelr::add_predictions(bc_full_interx_smooth$gam) %>%
+  dcast(year ~ county_type, value.var = "pred", fill = 0) %>%
+  mutate(diff = `1` - `0`) %>%
+  ggplot(aes(x = year, y = diff)) +
+           geom_line()
+ggsave("figures/effectmod_plots/old/bc/bc_smooth.png", width = 6, height = 4, dpi = 300)
+
+# compare with original glmm
+bc_interx_plot
+
+## Compare fitted values between GLMM and GAMM
+
+tibble(
+  fit_glmm = fitted(bc_full_interx),
+  fit_gamm = fitted(bc_full_interx_smooth$gam)) %>% 
+  ggplot(aes(x = fit_glmm, y = fit_gamm)) + 
+  geom_point() 
+
+tibble(
+  fit_glmm = fitted(bc_full_interx),
+  fit_gamm = fitted(bc_full_interx_smooth$gam)) %>% 
+  mutate(diff = fit_glmm - fit_gamm) %>% 
+  ggplot(aes(x = diff)) + geom_histogram() # 
+
+
+length(fitted(bc_full_interx))
+length(fitted(bc_full_interx_smooth$gam))
+complete.cases(bc_ai_join)
+
+```
+
+Next steps: We wanted to check if glmm and gamm predict the same way (include random effects or just fixed effects). We check glm vs. gam fitted values, no random effects (just year), then just year and county as a fixed effect (not random effect), then year and county as a random effect. We also compare models with fixed vs random county effects. We didn't find substantial differences depending on the diff packages used.
+
+```{r Compare GLM and GAM}
+# # 1. run GLM and GAM with only year as fixed effect
+# bc_glm = glm(bc ~ as.factor(year),
+#     data = bc_ai_join)
+# summary(bc_glm)
+# bc_gam = gamm4(bc ~ s(year),
+#     data = bc_ai_join)
+# summary(bc_gam)
+# 
+# ## compare GLM and GAM fitted values
+# glm_gam_pt = tibble(
+#   fit_glm = fitted(bc_glm),
+#   fit_gam = fitted(bc_gam$gam)) %>% 
+#   ggplot(aes(x = fit_glm, y = fit_gam)) + 
+#   geom_point() 
+# 
+# glm_gam_hist = tibble(
+#   fit_glm = fitted(bc_glm),
+#   fit_gam = fitted(bc_gam$gam)) %>% 
+#   mutate(diff = fit_glm - fit_gam) %>% 
+#   ggplot(aes(x = diff)) + geom_histogram() 
+# require(cowplot)
+# plot_grid(glm_gam_pt, glm_gam_hist, ncol=2)
+# ### notes: seem to fit along the identity line (at least, not the horizontal striations we saw above). small range of differences in values based on histogram.
+# 
+# # 2. run GLM and GAM with year AND county as fixed effects
+# ## sample 10,000 rows because otherwise it will take forever to run
+# 
+# bc_ai_sample = sample_n(bc_ai_join, 10000)
+# bc_glm_countyfixed = glm(bc ~ as.factor(year) + County,
+#     data = bc_ai_sample)
+# summary(bc_glm_countyfixed)
+# bc_gam_countyfixed = gamm4(bc ~ s(year) + County,
+#     data = bc_ai_sample)
+# summary(bc_gam_countyfixed)
+# 
+# ## compare GLM and GAM fitted values
+# glm_gam_county_pt = tibble(
+#   fit_glm = predict(bc_glm_countyfixed),
+#   fit_gam = predict(bc_gam_countyfixed$gam)) %>% 
+#   ggplot(aes(x = fit_glm, y = fit_gam)) + 
+#   geom_point() 
+# 
+# glm_gam_county_hist = tibble(
+#   fit_glm = predict(bc_glm_countyfixed),
+#   fit_gam = predict(bc_gam_countyfixed$gam)) %>% 
+#   mutate(diff = fit_glm - fit_gam) %>% 
+#   ggplot(aes(x = diff)) + geom_histogram() 
+# 
+# 
+# plot_grid(glm_gam_county_pt, glm_gam_county_hist)
+# fixef(bc_gam_countyfixed$mer)
+# ### notes: also seem to fit along the identity line (at least, not the horizontal striations we saw above). small range of differences in values based on histogram. a good sign!
+# 
+# 
+# # 3. Run GLMM and GAMM with county as a nested random effect within states
+# ## use sampled 10,000 rows because otherwise it will take forever to run
+# bc_glmm_county = lmer(bc ~ as.factor(year) + (1|State/County),
+#     data = bc_ai_join)
+# summary(bc_glmm_county)
+# bc_gamm_county = gamm4(bc ~ s(year, k = 10),
+#                            random = ~(1|State/County),
+#                        data = bc_ai_join)
+# summary(bc_gamm_county$gam)
+# 
+# ## compare GLMM and GAMM fitted values
+# glmm_gamm_pt = tibble(
+#   fit_glmm = fitted(bc_glmm_county),
+#   fit_gamm = fitted(bc_gamm_county$mer)) %>% 
+#   ggplot(aes(x = fit_glmm, y = fit_gamm)) + 
+#   geom_point() 
+# 
+# glmm_gamm_hist = tibble(
+#   fit_glm = fitted(bc_glm_countyfixed),
+#   fit_gam = fitted(bc_gam_countyfixed)) %>% 
+#   mutate(diff = fit_glm - fit_gam) %>% 
+#   ggplot(aes(x = diff)) + geom_histogram() 
+# 
+# plot_grid(glmm_gamm_pt, glmm_gamm_hist)
+# 
+# length(fitted(bc_gamm_county$gam))
+# length(fitted(bc_glmm_county))
+# length(unique(fitted(bc_gamm_county$gam)))
+# length(unique(fitted(bc_glmm_county)))
+# bc_gamm_county$mer
+```
+
+```{r Compare GLM and GAM using mer}
+# # 1. run GLM and GAM with only year as fixed effect
+# bc_glm = glm(bc ~ as.factor(year),
+#     data = bc_ai_join)
+# summary(bc_glm)
+# bc_gam = gamm4(bc ~ s(year),
+#     data = bc_ai_join)
+# summary(bc_gam)
+# 
+# ## compare GLM and GAM fitted values
+# glm_gam_pt = tibble(
+#   fit_glm = fitted(bc_glm),
+#   fit_gam = fitted(bc_gam$mer)) %>% 
+#   ggplot(aes(x = fit_glm, y = fit_gam)) + 
+#   geom_point() 
+# 
+# glm_gam_hist = tibble(
+#   fit_glm = fitted(bc_glm),
+#   fit_gam = fitted(bc_gam$mer)) %>% 
+#   mutate(diff = fit_glm - fit_gam) %>% 
+#   ggplot(aes(x = diff)) + geom_histogram() 
+# require(cowplot)
+# plot_grid(glm_gam_pt, glm_gam_hist, ncol=2)
+# ### notes: seem to fit along the identity line (at least, not the horizontal striations we saw above). small range of differences in values based on histogram.
+# 
+# # 2. run GLM and GAM with year AND county as fixed effects
+# ## sample 10,000 rows because otherwise it will take forever to run
+# 
+# bc_ai_sample = sample_n(bc_ai_join, 10000)
+# bc_glm_countyfixed = glm(bc ~ as.factor(year) + County,
+#     data = bc_ai_sample)
+# summary(bc_glm_countyfixed)
+# bc_gam_countyfixed = gamm4(bc ~ s(year) + County,
+#     data = bc_ai_sample)
+# summary(bc_gam_countyfixed)
+# 
+# ## compare GLM and GAM fitted values
+# glm_gam_county_pt = tibble(
+#   fit_glm = predict(bc_glm_countyfixed),
+#   fit_gam = predict(bc_gam_countyfixed$mer)) %>% 
+#   ggplot(aes(x = fit_glm, y = fit_gam)) + 
+#   geom_point() 
+# 
+# glm_gam_county_hist = tibble(
+#   fit_glm = predict(bc_glm_countyfixed),
+#   fit_gam = predict(bc_gam_countyfixed$mer)) %>% 
+#   mutate(diff = fit_glm - fit_gam) %>% 
+#   ggplot(aes(x = diff)) + geom_histogram() 
+# 
+# 
+# plot_grid(glm_gam_county_pt, glm_gam_county_hist)
+# fixef(bc_gam_countyfixed$mer)
+# ### notes: also seem to fit along the identity line (at least, not the horizontal striations we saw above). small range of differences in values based on histogram. a good sign!
+# 
+# 
+# # 3. Run GLMM and GAMM with county as a nested random effect within states
+# ## use sampled 10,000 rows because otherwise it will take forever to run
+# bc_glmm_county = lmer(bc ~ as.factor(year) + (1|State/County),
+#     data = bc_ai_join)
+# summary(bc_glmm_county)
+# bc_gamm_county = gamm4(bc ~ s(year, k = 10),
+#                            random = ~(1|State/County),
+#                        data = bc_ai_join)
+# summary(bc_gamm_county$gam)
+# 
+# ## compare GLMM and GAMM fitted values
+# glmm_gamm_pt = tibble(
+#   fit_glmm = fitted(bc_glmm_county),
+#   fit_gamm = fitted(bc_gamm_county$mer)) %>% 
+#   ggplot(aes(x = fit_glmm, y = fit_gamm)) + 
+#   geom_point() 
+# 
+# glmm_gamm_hist = tibble(
+#   fit_glm = fitted(bc_glm_countyfixed),
+#   fit_gam = fitted(bc_gam_countyfixed)) %>% 
+#   mutate(diff = fit_glm - fit_gam) %>% 
+#   ggplot(aes(x = diff)) + geom_histogram() 
+# 
+# plot_grid(glmm_gamm_pt, glmm_gamm_hist)
+# 
+# length(fitted(bc_gamm_county$gam))
+# length(fitted(bc_glmm_county))
+# length(unique(fitted(bc_gamm_county$gam)))
+# length(unique(fitted(bc_glmm_county)))
+# bc_gamm_county$mer
+```

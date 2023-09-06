@@ -1,0 +1,278 @@
+---
+title: "Descriptive Stats"
+author: "Maggie Li (ml4424)"
+date: "10/5/2021"
+output: html_document
+---
+
+## Table 1: Get values for avg PM component levels
+
+```{r}
+library(tidyverse)
+library(janitor)
+```
+
+```{r data read in}
+## Read in all components data
+
+bc_allyrs = read_csv("data/county_concentrations/allyrs/bc_allyrs.csv")
+nh4_allyrs = read_csv("data/county_concentrations/allyrs/nh4_allyrs.csv")
+no3_allyrs = read_csv("data/county_concentrations/allyrs/no3_allyrs.csv")
+om_allyrs = read_csv("data/county_concentrations/allyrs/om_allyrs.csv")
+so4_allyrs = read_csv("data/county_concentrations/allyrs/so4_allyrs.csv")
+soil_allyrs = read_csv("data/county_concentrations/allyrs/soil_allyrs.csv")
+
+# combine into one df with all components data
+comp_allyrs = bc_allyrs %>% 
+  inner_join(nh4_allyrs) %>% 
+  inner_join(no3_allyrs) %>% 
+  inner_join(om_allyrs) %>% 
+  inner_join(so4_allyrs) %>% 
+  inner_join(soil_allyrs) 
+
+# read in county type files
+ai_county_fips = read_csv("data/ai_counties.csv") 
+nai_county_fips = read_csv("data/nai_counties.csv")
+
+# join the two county type files together
+all_county_types = rbind(ai_county_fips, nai_county_fips) %>% 
+  rename(FIPS = County)
+```
+
+```{r join with AI county type and covariates data}
+comp_allyrs
+
+comp_ai_join = left_join(comp_allyrs, all_county_types) %>% 
+  dplyr::select(-County, -State, -ID) %>% 
+  rename(County = FIPS)
+comp_ai_join
+
+# join with covariates
+covariates = read_csv("data/covariates.csv")
+summary(covariates)
+comp_ai_join = comp_ai_join %>% 
+  left_join(covariates)
+comp_ai_join
+
+# read out data file for maps, stat models
+write_csv(comp_ai_join,
+          "data/county_concentrations/allyrs/comp_ai_join.csv")
+```
+
+
+```{r all counties avg and std by county type}
+# BC
+## AI counties
+comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(bc) %>% mean()
+comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(bc) %>% sd()
+
+## non-AI counties
+comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(bc) %>% mean()
+comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(bc) %>% sd()
+
+# NH4
+## AI counties
+comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(nh4) %>% mean()
+comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(nh4) %>% sd()
+
+## non-AI counties
+comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(nh4) %>% mean()
+comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(nh4) %>% sd()
+
+# NO3
+## AI counties
+comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(no3) %>% mean()
+comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(no3) %>% sd()
+
+## non-AI counties
+comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(no3) %>% mean()
+comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(no3) %>% sd()
+
+# SO4
+## AI counties
+comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(so4) %>% mean()
+comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(so4) %>% sd()
+
+## non-AI counties
+comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(so4) %>% mean()
+comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(so4) %>% sd()
+
+# OM
+## AI counties
+comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(om) %>% mean()
+comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(om) %>% sd()
+
+## non-AI counties
+comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(om) %>% mean()
+comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(om) %>% sd()
+ 
+
+# SOIL
+## AI counties
+comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(soil) %>% mean()
+comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(soil) %>% sd()
+
+## non-AI counties
+comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(soil) %>% mean()
+comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(soil) %>% sd()
+
+```
+
+Also pull values for rural counties (defined by National Center for Health Statistics): https://www.cdc.gov/nchs/data/series/sr_02/sr02_166.pdf 
+Note: Not being included in paper.
+```{r rural counties avg and std by county type}
+# rural counties df
+rural_comp_ai_join = comp_ai_join %>% 
+  filter(land_use >= 5)
+
+# BC
+## AI counties
+rural_comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(bc) %>% mean()
+rural_comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(bc) %>% sd()
+
+## non-AI counties
+rural_comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(bc) %>% mean()
+rural_comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(bc) %>% sd()
+
+# NH4
+## AI counties
+rural_comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(nh4) %>% mean()
+rural_comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(nh4) %>% sd()
+
+## non-AI counties
+rural_comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(nh4) %>% mean()
+rural_comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(nh4) %>% sd()
+
+# NO3
+## AI counties
+rural_comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(no3) %>% mean()
+rural_comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(no3) %>% sd()
+
+## non-AI counties
+rural_comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(no3) %>% mean()
+rural_comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(no3) %>% sd()
+
+# OM
+## AI counties
+rural_comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(om) %>% mean()
+rural_comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(om) %>% sd()
+
+## non-AI counties
+rural_comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(om) %>% mean()
+rural_comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(om) %>% sd()
+ 
+# SO4
+## AI counties
+rural_comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(so4) %>% mean()
+rural_comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(so4) %>% sd()
+
+## non-AI counties
+rural_comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(so4) %>% mean()
+rural_comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(so4) %>% sd()
+
+# SOIL
+## AI counties
+rural_comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(soil) %>% mean()
+rural_comp_ai_join %>% 
+  filter(county_type == 1) %>% 
+  pull(soil) %>% sd()
+
+## non-AI counties
+rural_comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(soil) %>% mean()
+rural_comp_ai_join %>% 
+  filter(county_type == 0) %>% 
+  pull(soil) %>% sd()
+
+```
